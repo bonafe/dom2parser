@@ -1,0 +1,120 @@
+# Manually annotated ground truth for the 6 real-world example HTML files.
+#
+# Each entry describes, for one example file:
+#   - relevant: the repeated cluster(s) that actually carry the data a
+#     consumer would want to extract (used to test that ranking, Fase F,
+#     places these clusters at the top).
+#   - noise: known dominant repeated/bulky clusters that are boilerplate
+#     (navigation menus, filter widgets, bootstrap JSON) and must NOT
+#     outrank the relevant clusters, even though they are often larger
+#     or repeat more often.
+#
+# `selector` is a CSS selector (resolved via lxml.cssselect against the
+# raw, unsanitized document) used only to compute expected counts here;
+# the pipeline itself does not need to know these selectors in advance.
+
+- file: bancodobrasil.html
+  description: >
+    Cartao/fatura do Banco do Brasil. Duas tabelas de lancamentos
+    (div.lancamentos) com linhas de transacao, secao, especial e vazias.
+    Menu de navegacao lateral tem mais repeticoes brutas (146) que a
+    coluna de titulo da tabela relevante (33).
+  relevant:
+    - selector: "div.lancamentos"
+      count: 2
+      note: outer container of the relevant repeated tables
+    - selector: "div.lancamentos table tr"
+      count: 154
+      note: transaction/section/special/empty rows across both tables
+    - selector: "td.tituloLancamento"
+      count: 33
+      note: category/section-row title cells
+  noise:
+    - selector: "*.menu-titulo-nivel2"
+      count: 146
+      note: side navigation menu items -- must rank below the lancamentos rows
+
+- file: acervodadostecnicosgovbr.html
+  description: >
+    Vue SPA listing 28 downloadable resources of a single dataset. Every
+    element in the component carries a uniform Vue scoped-css hash
+    attribute (data-v-444d5111) with the SAME value on all 470
+    occurrences -- a build artifact, not per-instance noise.
+  relevant:
+    - selector: "div.row.flex.mb-5"
+      count: 28
+      note: one row per downloadable resource
+    - selector: "#btnDownloadUrl"
+      count: 28
+      note: download button, one per resource row
+  noise: []
+
+- file: conjuntodadosgovbr.html
+  description: >
+    CKAN dataset search results page. ~83% of the file is a facet filter
+    widget (vue-multiselect) rendered BEFORE the 10 actual result cards.
+    The filter widget is itself deeply repeated and must rank below the
+    result cards.
+  relevant:
+    - selector: "div.search-result.container"
+      count: 10
+      note: dataset search result cards
+  noise:
+    - selector: "span.multiselect__option"
+      count: 1490
+      note: facet filter dropdown options -- must rank below the 10 result cards
+    - selector: "li.multiselect__element"
+      count: 1466
+      note: facet filter dropdown list items -- must rank below the 10 result cards
+
+- file: dadosabertrosfiocruz.html
+  description: >
+    Drupal Views listing of 12 dataset resource rows. 63% of the file is
+    a Superfish mega-menu (sf-depth-2..6) that is itself a large repeated
+    <li> structure and must not outrank the 12 real content rows.
+  relevant:
+    - selector: "div.views-row"
+      count: 12
+      note: dataset resource rows (Drupal Views)
+  noise:
+    - selector: "li[class*=sf-depth]"
+      count: 497
+      note: multi-level navigation mega-menu items
+
+- file: folhadesp.html
+  description: >
+    Folha de S.Paulo "DeltaFolha" news hub. 100 newslist headline items
+    (li.c-headline, includes 30 visible + 70 lazy-paginated `is-hidden`),
+    a hamburger navigation menu with more raw repetitions (155), and 483
+    near-identical inline SVG icons (one per headline's share button)
+    that are pure byte-level duplication, not data-bearing repetition.
+  relevant:
+    - selector: "li.c-headline--newslist"
+      count: 100
+      note: main newslist headline items
+  noise:
+    - selector: "li.c-list-menu__item"
+      count: 155
+      note: hamburger navigation menu items
+    - selector: "svg"
+      count: 483
+      note: repeated identical share-icon SVGs -- candidate for subtree dedup (Fase 1b), not clustering
+
+- file: oss_gov_br_whatsapp.html
+  description: >
+    NOTE despite the filename this is a WhatsApp Web snapshot, not a
+    gov.br page (a chat where gov.br links were shared). ~68% of the
+    file is embedded bootstrap/config JSON in <script data-sjs> blocks.
+    Nearly every visible element carries 5-25 meaningless atomic-CSS
+    classes; data-testid is the only stable identity signal.
+  relevant:
+    - selector: 'div[data-testid="cell-frame-container"]'
+      count: 23
+      note: chat list sidebar rows
+    - selector: 'div[data-testid="msg-container"]'
+      count: 6
+      note: message bubbles in the open conversation
+  noise:
+    - selector: "script[data-sjs]"
+      count: 28
+      note: embedded bootstrap/config JSON blobs -- expected to be fully removed by sanitization (Fase B), not merely ranked low

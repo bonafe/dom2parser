@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arquitetura — DOM2parser</title>
+<meta name="description" content="Arquitetura do pipeline e estrutura de módulos do DOM2parser.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗜️</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <nav class="nav">
+    <a class="nav-brand" href="index.html">🗜️ DOM2parser</a>
+    <div class="nav-links">
+      <a href="index.html">Início</a>
+      <a href="architecture.html" class="active">Arquitetura</a>
+      <a href="decisions.html">Decisões</a>
+      <a href="usage.html">Uso</a>
+      <a href="benchmarks.html">Resultados</a>
+      <a href="https://github.com/bonafe/DOM2parser">GitHub ↗</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+
+<h1>Arquitetura</h1>
+<p class="lede">Como o HTML original vira uma representação compacta, e por quê.</p>
+
+<div class="toc">
+  <strong>Nesta página</strong>
+  <ul>
+    <li><a href="#escopo">Escopo e fronteira do projeto</a></li>
+    <li><a href="#pipeline">O pipeline de 7 etapas</a></li>
+    <li><a href="#modulos">Estrutura de módulos</a></li>
+    <li><a href="#modelo">Modelo de dados</a></li>
+    <li><a href="#saida">Formato de saída</a></li>
+  </ul>
+</div>
+
+<h2 id="escopo">Escopo e fronteira do projeto</h2>
+<p>
+  O DOM2parser é uma <strong>biblioteca de compressão</strong>, não um gerador de parsers.
+  Ele recebe HTML e devolve uma representação estrutural compacta (texto ou JSON).
+  Um programa externo — que tem seu próprio LLM — consome essa representação, gera o
+  parser (CSS/XPath/lxml/BeautifulSoup) e o valida contra o HTML <em>original</em>, nunca
+  contra a versão compactada.
+</p>
+<div class="tree">HTML original
+   │
+   ▼
+┌─────────────────────────────┐
+│         DOM2parser          │   ← este projeto
+│  (7 etapas, ver abaixo)     │
+└─────────────────────────────┘
+   │
+   ▼
+Representação compacta (texto/JSON)
+   │
+   ▼
+┌─────────────────────────────┐
+│   Programa consumidor       │   ← fora do escopo
+│   (LLM → parser → validação)│
+└─────────────────────────────┘
+   │
+   ▼
+Parser executado no HTML ORIGINAL completo</div>
+
+<h2 id="pipeline">O pipeline de 7 etapas</h2>
+
+<h3>1 · Sanitização estrutural</h3>
+<p>
+  Remove <code>script</code>, <code>style</code>, <code>svg</code>, <code>noscript</code>,
+  <code>comment</code>, <code>meta</code>, <code>link</code> e trunca data-URIs inline.
+  Atributos ruidosos (<code>style</code>, handlers <code>on*</code>, atributos visuais
+  legados como <code>bgcolor</code>/<code>cellpadding</code>) são removidos por
+  <strong>denylist</strong>, não allowlist — mais seguro que arriscar descartar um
+  <code>data-*</code> customizado que uma etapa posterior precise.
+</p>
+<p>
+  Também remove navegação/menus/sidebars/breadcrumbs (por tag, role ou palavra-chave em
+  classe/id) e widgets ocultos por <code>display:none</code> inline — mas
+  <strong>nunca</strong> por atributo <code>hidden</code> ou classe de ocultação via CSS
+  externo, porque sites reais usam isso para paginação client-side de conteúdo real
+  (ver <a href="decisions.html#adr-006">decisão sobre paginação oculta</a>).
+</p>
+
+<h3>2 · Dedup de subtree idêntico</h3>
+<p>
+  Colapsa subtrees byte-a-byte idênticos repetidos em escala (ex. um ícone SVG de
+  compartilhar repetido 484× num site de notícias) num único exemplar + contagem.
+  Limiar de contagem propositalmente alto — ver <a href="decisions.html#adr-002">por quê</a>.
+</p>
+
+<h3>3 · Fingerprint estrutural com fallback</h3>
+<p>Assinatura por elemento, numa cadeia de prioridade:</p>
+<div class="tree">data-testid → role/aria-* → classes semânticas → id → tag + forma dos filhos</div>
+<p>
+  Classes CSS "atômicas" (estilo Stylex/CSS-in-JS, ex. <code>x78zum5</code>) e
+  atributos de hash de build uniformes (ex. <code>data-v-444d5111</code> do Vue scoped
+  CSS) são detectados e ignorados na comparação — são artefatos de compilação, não
+  identidade semântica.
+</p>
+
+<h3>4 · Content signature</h3>
+<p>Cada campo de texto é classificado <strong>sempre a partir do próprio texto</strong>, nunca da classe CSS:</p>
+<div class="grid grid-3">
+  <div class="card"><strong>Temporais</strong><br><code>DATE</code> <code>DATETIME</code> <code>TIME</code></div>
+  <div class="card"><strong>Numéricos</strong><br><code>MONEY</code> <code>CURRENCY</code> <code>INTEGER</code> <code>DECIMAL</code> <code>PERCENTAGE</code></div>
+  <div class="card"><strong>Estruturados</strong><br><code>EMAIL</code> <code>URL</code> <code>PHONE</code> <code>BOOLEAN</code></div>
+  <div class="card"><strong>Específicos do projeto</strong><br><code>FILE_FORMAT</code> <code>COUNT_LABELED</code></div>
+  <div class="card"><strong>Genéricos</strong><br><code>TEXT</code> <code>EMPTY</code></div>
+</div>
+<p>Degrada graciosamente: texto que não bate em nenhum padrão específico vira <code>TEXT</code> (nunca força um tipo errado nem lança exceção).</p>
+
+<h3>5 · Clusterização tolerante</h3>
+<p>Dois níveis, porque estrutura DOM sozinha não basta:</p>
+<ol>
+  <li><strong>Estrutural</strong> — agrupa por fingerprint. Campos opcionais não fragmentam o grupo (um card sem selo de qualidade continua no mesmo cluster dos outros 9).</li>
+  <li><strong>Por assinatura de conteúdo</strong> — dentro de um grupo estrutural idêntico, sub-agrupa pela sequência de tipos dos filhos diretos. É assim que uma linha de transação (<code>DATE|TEXT|CURRENCY|MONEY</code>) se separa de uma linha de categoria (<code>EMPTY|TEXT|EMPTY|EMPTY</code>) mesmo quando ambas são <code>tr(td,td,td,td)</code> sem nenhuma classe distintiva.</li>
+</ol>
+
+<h3>6 · Ranking de relevância</h3>
+<p>
+  O componente mais heurístico do projeto. Contagem bruta de repetição <strong>não</strong>
+  indica relevância — um menu de navegação rotineiramente se repete mais que a tabela de
+  dados real. O score combina:
+</p>
+<ul>
+  <li>Diversidade de tipos de conteúdo informativos (campos com <code>DATE</code>/<code>MONEY</code>/etc. pontuam mais que <code>TEXT</code>/<code>EMPTY</code> puros)</li>
+  <li>Número de sub-campos semanticamente distintos por registro</li>
+  <li>Palavras-chave de contêiner ancestral (bônus: <code>result</code>/<code>row</code>/<code>item</code>; penalidade: <code>nav</code>/<code>menu</code>/<code>sidebar</code>)</li>
+  <li>Tamanho de texto do próprio registro (log-amortecido)</li>
+</ul>
+<p>Todos os sinais são <strong>limitados em profundidade</strong> (3 níveis) — um sinal recursivo irrestrito faria um contêiner genérico grande "herdar" a riqueza de tudo que está aninhado dentro dele e vencer o registro real que ele envolve.</p>
+
+<h3>7 · Sampling representativo</h3>
+<p>Primeiro, segundo, meio, penúltimo, último — mais outliers reais: valor numérico mínimo/máximo por campo (ex. o maior débito de uma fatura) e o registro com texto mais curto/mais longo.</p>
+
+<h2 id="modulos">Estrutura de módulos</h2>
+<div class="tree">dom2parser/
+├── __init__.py          # API pública: compress(html) -> CompactRepresentation
+├── html_io.py           # parsing via lxml (recovering parser)
+├── dom_utils.py         # helpers de extração de texto compartilhados
+│
+├── sanitize/
+│   ├── strip.py          # etapa 1: remove tags/comentários/data-URIs
+│   ├── attrs.py           # denylist de atributos ruidosos
+│   ├── boilerplate.py      # remoção de nav/menu/sidebar + widgets ocultos
+│   └── dedup_subtree.py    # etapa 2: dedup de subtree idêntico
+│
+├── fingerprint/
+│   ├── hashattrs.py        # detecção de classes atômicas e hashes de build
+│   └── structural.py        # etapa 3: fingerprint com fallback
+│
+├── content/
+│   ├── classifiers.py        # regex/parsers por tipo
+│   └── signature.py           # etapa 4: orquestração ordenada por especificidade
+│
+├── cluster/
+│   ├── siblings.py             # etapa 5: clusterização em 2 níveis
+│   ├── rank.py                  # etapa 6: score de relevância
+│   └── outliers.py               # outliers numéricos e de texto
+│
+├── sampling/
+│   └── representative.py          # etapa 7: seleção de amostras
+│
+├── compact/
+│   ├── paths.py                    # caminho legível do ancestral (ex. "form#x > ul.y > tr")
+│   ├── render_text.py               # renderer de texto estruturado
+│   ├── render_json.py                # renderer JSON
+│   └── tokens.py                      # contagem de chars/tokens (tiktoken opcional)
+│
+├── eval/
+│   └── harness.py                      # suíte de regressão contra os 6 exemplos reais
+│
+└── cli.py                                # wrapper fino p/ testes manuais (não é o produto)</div>
+
+<h2 id="modelo">Modelo de dados</h2>
+<table>
+  <thead><tr><th>Tipo</th><th>Campos principais</th><th>Onde</th></tr></thead>
+  <tbody>
+    <tr><td><code>Fingerprint</code></td><td><code>tag</code>, <code>identity</code>, <code>children_tags</code></td><td><code>fingerprint/structural.py</code></td></tr>
+    <tr><td><code>Cluster</code></td><td><code>structural_key</code>, <code>content_signature</code>, <code>elements</code></td><td><code>cluster/siblings.py</code></td></tr>
+    <tr><td><code>ClusterScore</code></td><td><code>cluster</code>, <code>score</code>, <code>signals</code></td><td><code>cluster/rank.py</code></td></tr>
+    <tr><td><code>Sample</code></td><td><code>cluster</code>, <code>indices</code>, <code>reasons</code></td><td><code>sampling/representative.py</code></td></tr>
+    <tr><td><code>Signature</code></td><td><code>type</code>, <code>raw</code>, <code>value</code></td><td><code>content/signature.py</code></td></tr>
+    <tr><td><code>CompactRepresentation</code></td><td><code>text</code>, <code>json</code>, <code>reduction</code></td><td><code>dom2parser/__init__.py</code></td></tr>
+  </tbody>
+</table>
+
+<h2 id="saida">Formato de saída</h2>
+<p>Exemplo real gerado a partir de uma fatura de cartão (ver <a href="benchmarks.html">todos os resultados</a>):</p>
+<pre><code>REPEATED STRUCTURES (ranked by relevance):
+
+tr > td > div.lancamentos > table > tbody > tr
+  count: 122
+  signature: DATE | TEXT | CURRENCY | MONEY
+  examples:
+    ['28/07', 'PGTO DEBITO CONTA 6937 000000253 200211', 'R$', '-11.966,18']  # numeric-outlier
+    ['03/08', 'OBA HORTIFRUTI INDAIAT INDAIATUBA BR', 'R$', '99,97']          # representative-position
+    ...</code></pre>
+<p>O formato JSON equivalente carrega os mesmos campos (<code>path</code>, <code>count</code>, <code>signature</code>, <code>examples</code>, <code>optional_fields</code>, <code>rank_score</code>) — veja a <a href="usage.html#api">referência da API</a>.</p>
+
+</main>
+
+<footer>
+  <p>Parte da documentação do <a href="index.html">DOM2parser</a> · <a href="https://github.com/bonafe/DOM2parser">código-fonte</a></p>
+</footer>
+
+</body>
+</html>

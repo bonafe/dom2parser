@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Decisões de arquitetura — DOM2parser</title>
+<meta name="description" content="Architecture Decision Records do DOM2parser — decisões reais tomadas a partir de bugs encontrados contra HTML de produção.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗜️</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <nav class="nav">
+    <a class="nav-brand" href="index.html">🗜️ DOM2parser</a>
+    <div class="nav-links">
+      <a href="index.html">Início</a>
+      <a href="architecture.html">Arquitetura</a>
+      <a href="decisions.html" class="active">Decisões</a>
+      <a href="usage.html">Uso</a>
+      <a href="benchmarks.html">Resultados</a>
+      <a href="https://github.com/bonafe/DOM2parser">GitHub ↗</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+
+<h1>Decisões de arquitetura</h1>
+<p class="lede">
+  Cada ADR abaixo nasceu de um comportamento real observado ao rodar o pipeline contra
+  as 6 páginas HTML de produção usadas como corpus de teste — não de especulação.
+  Quando a heurística é conhecida por ser imperfeita, isso está dito explicitamente.
+</p>
+
+<div class="adr" id="adr-001">
+<h3>ADR-001 — Rejeitar HtmlRAG como camada de sanitização <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  O documento de especificação original sugeria avaliar o <a href="https://github.com/plageon/HtmlRAG">HtmlRAG</a>
+  como candidato pronto para a etapa de limpeza/compressão inicial.
+</p>
+<h4>O que aconteceu</h4>
+<p>
+  Testado contra <code>bancodobrasil.html</code>: <code>htmlrag.clean_html()</code> reduziu
+  83,7% dos caracteres, mas <strong>removeu os atributos <code>class</code>/<code>id</code></strong>
+  necessários para construir seletores CSS/XPath — as strings <code>lancamentos</code> e
+  <code>tituloLancamento</code> desapareceram completamente do resultado, sobrando só o
+  texto bruto. Além disso, instalar o pacote trouxe <code>torch</code>, <code>transformers</code>,
+  <code>sentence-transformers</code>, <code>langchain</code>, <code>faiss-cpu</code> e wheels
+  CUDA completos — <strong>6&nbsp;GB</strong> num venv que antes tinha 43&nbsp;MB.
+</p>
+<h4>Decisão</h4>
+<p>
+  HtmlRAG não é usado. Ele resolve um problema diferente (denoising de HTML para RAG
+  textual/QA) e destrói ativamente a estrutura que este projeto depende, a um custo de
+  dependência desproporcional ao que substituiria. A sanitização é feita por
+  <code>sanitize/</code> (módulo próprio, sem dependências pesadas).
+</p>
+<h4>Consequência</h4>
+<p>O spike ficou registrado em <code>scripts/measure_htmlrag.py</code> como documentação viva da decisão, caso a pergunta volte a surgir no futuro.</p>
+</div>
+
+<div class="adr" id="adr-002">
+<h3>ADR-002 — Limiar de dedup de subtree propositalmente alto <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  A etapa de dedup de subtree idêntico (colapsar bytes repetidos, ex. ícones SVG) precisa
+  de um limiar mínimo de contagem para agir.
+</p>
+<h4>O que aconteceu</h4>
+<p>
+  Com limiar 3, o dedup colapsou os 28 botões idênticos <code>#btnDownloadUrl</code> do
+  Acervo (mesmo rótulo "Acessar o recurso" em todos) e várias células
+  <code>&lt;td class="tituloLancamento"&gt;&lt;/td&gt;</code> vazias do Banco do Brasil —
+  registros de dados legítimos, não decoração, apenas com um campo constante.
+</p>
+<h4>Decisão</h4>
+<p>
+  Limiar elevado para 50 — acima da contagem de registros reais observada em qualquer um
+  dos 6 exemplos (o maior, 100 itens da Folha, não são bytes-idênticos entre si porque
+  cada manchete difere). Um subtree verdadeiramente decorativo repetido em escala
+  (centenas de vezes) ainda é pego; um registro de dado com um campo constante não é.
+</p>
+<h4>Consequência</h4>
+<p>Documentado como limitação conhecida: uma página real com &gt;50 registros byte-idênticos entre si seria erroneamente colapsada. Não observado nos 6 exemplos até agora.</p>
+</div>
+
+<div class="adr" id="adr-003">
+<h3>ADR-003 — Sinais de ranking limitados em profundidade <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  O <code>bancodobrasil.html</code> usa layout de tabelas aninhadas legado: uma
+  <code>&lt;tr&gt;</code> de "resumo" no nível externo contém, várias tabelas abaixo, a
+  tabela inteira de 122 transações.
+</p>
+<h4>O que aconteceu</h4>
+<p>
+  Sinais de ranking que escaneavam a subtree inteira sem limite (contagem de tipos de
+  conteúdo informativos, contagem de sub-campos distintos) faziam essa <code>&lt;tr&gt;</code>
+  externa "herdar" toda a riqueza de informação de tudo que estava aninhado nela —
+  inclusive as 122 linhas de transação — e pontuar mais alto que a própria tabela de
+  transações que ela envolvia.
+</p>
+<h4>Decisão</h4>
+<p>
+  Sinais recursivos (<code>_recursive_informative_types</code>,
+  <code>_distinct_semantic_descendant_count</code>) e o cálculo de tamanho de texto do
+  registro foram limitados a 3 níveis de profundidade / filhos diretos. Um contêiner
+  genérico grande não pontua mais só por conter tudo — a riqueza de um registro precisa
+  vir dos próprios campos, não do que está aninhado arbitrariamente abaixo dele.
+</p>
+<h4>Consequência</h4>
+<p>Após a correção, o cluster de 122 transações passou de 3º lugar para 1º no ranking bruto de <code>bancodobrasil.html</code>.</p>
+</div>
+
+<div class="adr" id="adr-004">
+<h3>ADR-004 — Um cluster só "cobre" descendentes se tiver campo específico <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  Na seleção final de clusters (<code>select_top_level_clusters</code>), um cluster externo
+  bem-ranqueado suprime clusters aninhados dentro dele, para evitar redundância no
+  relatório final.
+</p>
+<h4>O que aconteceu</h4>
+<p>
+  A regra inicial ("suprimir se o cluster externo já tem ≥2 campos") falhava em dois
+  casos reais: os 2 painéis de acordeão do Acervo ("Organização"/"Recursos", cada um
+  reduzido a 2 blobs de <code>TEXT</code> genérico) suprimiam o cluster real de 27
+  recursos aninhado dentro do painel "Recursos"; e a <code>&lt;tr&gt;</code> de resumo do
+  Banco do Brasil (ADR-003) fazia o mesmo com as 122 transações. Em ambos os casos, o
+  cluster "rico em campos" na verdade só tinha blobs de texto genérico, não campos
+  específicos de verdade.
+</p>
+<h4>Decisão</h4>
+<p>
+  Um cluster só bloqueia descendentes se tiver ≥2 campos <strong>E</strong> pelo menos um
+  deles for de um tipo específico (não <code>TEXT</code>/<code>EMPTY</code>/<code>URL</code>
+  genérico). Contagem de campos sozinha não basta como sinal de "este cluster já é
+  granular o suficiente".
+</p>
+</div>
+
+<div class="adr" id="adr-005">
+<h3>ADR-005 — Fingerprint de forma exige complexidade mínima <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  Quando um elemento não tem <code>id</code>/<code>class</code>/<code>role</code>/<code>data-testid</code>,
+  o fingerprint recorre à "forma" (tag + sequência de tags-filhas).
+</p>
+<h4>O que aconteceu</h4>
+<p>
+  <code>&lt;table&gt;&lt;tbody&gt;&lt;/tbody&gt;&lt;/table&gt;</code> sem classe tem
+  <code>children_tags=("tbody",)</code> — sempre o mesmo valor, não importa o que tem
+  dentro do <code>tbody</code>. Confirmado em <code>bancodobrasil.html</code>: 7 tabelas
+  completamente diferentes da página fingerprintavam de forma idêntica e se fundiam num
+  único cluster sem sentido.
+</p>
+<h4>Decisão</h4>
+<p>
+  Um elemento sem identidade semântica só é candidato válido a cluster se tiver ≥2
+  filhos diretos (<code>fingerprint.structural.is_meaningful_candidate</code>).
+  Wrappers de filho único são descartados da descoberta de candidatos — o padrão
+  repetido real está um nível abaixo, onde <code>children_tags</code> carrega
+  informação de verdade (a sequência completa de <code>tr</code>s difere entre tabelas
+  não relacionadas).
+</p>
+</div>
+
+<div class="adr" id="adr-006">
+<h3>ADR-006 — Paginação oculta não é removida como "boilerplate" <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>A remoção de boilerplate precisa decidir o que "oculto" significa.</p>
+<h4>O que aconteceu</h4>
+<p>
+  <code>folhadesp.html</code> marca 70 dos 100 itens da lista de notícias com
+  <code>hidden="true"</code> e classe <code>is-hidden</code> — são itens reais,
+  paginados no cliente, não ruído. Já o widget de filtro do CKAN
+  (<code>conjuntodadosgovbr.html</code>) usa <code>style="display: none"</code>
+  <strong>inline</strong> num painel de dropdown fechado por padrão — esse sim é ruído.
+</p>
+<h4>Decisão</h4>
+<p>
+  <code>boilerplate.strip_hidden_by_inline_style</code> remove apenas ocultação via
+  <code>style="display:none"</code> <em>inline</em>. Nunca remove por atributo
+  <code>hidden</code> nem por classe de ocultação definida em CSS externo — heurística
+  mais estreita, mas sem falsos positivos observados nos 6 exemplos.
+</p>
+</div>
+
+<div class="adr" id="adr-007">
+<h3>ADR-007 — Content signature vem sempre do texto, nunca da classe <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>Como classificar o tipo semântico de um campo de texto.</p>
+<h4>O que aconteceu</h4>
+<p>
+  Em <code>conjuntodadosgovbr.html</code>, a mesma classe CSS
+  <code>search-result-metadata</code> aparece tanto em valores de formato de arquivo
+  ("CSV", "PDF") quanto em contadores rotulados ("48 Downloads", "0 Seguidores") — a
+  classe sozinha não desambigua o tipo.
+</p>
+<h4>Decisão</h4>
+<p>
+  <code>content/signature.py</code> classifica exclusivamente a partir do texto
+  normalizado, numa cadeia ordenada por especificidade (DATETIME → DATE → ... →
+  FILE_FORMAT → COUNT_LABELED → ... → TEXT), com degradação graciosa: texto que não
+  bate em nenhum padrão vira <code>TEXT</code> em vez de forçar um tipo errado ou lançar
+  exceção (testado com o caso real "Indisponível (Cabeçalho 'Last-modified' não
+  encontrado...)" num campo normalmente de data).
+</p>
+</div>
+
+<div class="adr" id="adr-008">
+<h3>ADR-008 — Escopo: sem chamadas a LLM dentro da biblioteca <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  O documento de especificação original desenha um pipeline de ponta a ponta incluindo
+  geração de parser via LLM e um loop de validação/reparo.
+</p>
+<h4>Decisão</h4>
+<p>
+  O DOM2parser implementa apenas até a representação compacta (texto/JSON). Geração de
+  parser, execução contra o HTML original e o loop de reparo ficam a cargo do programa
+  consumidor, que tem seu próprio LLM. Isso mantém a biblioteca testável
+  determinísticamente (sem custo de tokens, sem não-determinismo de modelo) e reutilizável
+  por qualquer consumidor, independente de qual LLM ou estratégia de geração de parser
+  ele use.
+</p>
+</div>
+
+<hr>
+<p class="callout warn">
+  <strong>Risco conhecido e aceito:</strong> o ranking de relevância (ADR-003, ADR-004)
+  é heurístico por natureza e foi validado contra apenas 6 páginas reais. Em
+  <code>folhadesp.html</code>, por exemplo, o cluster da lista principal de notícias
+  (106 itens) aparece em 3º lugar no ranking final, não em 1º — os dois clusters à
+  frente são estruturalmente válidos mas menos centrais ao conteúdo da página. Ajustar
+  os pesos do score deve ser esperado à medida que mais páginas reais forem testadas.
+</p>
+
+</main>
+
+<footer>
+  <p>Parte da documentação do <a href="index.html">DOM2parser</a> · <a href="https://github.com/bonafe/DOM2parser">código-fonte</a></p>
+</footer>
+
+</body>
+</html>

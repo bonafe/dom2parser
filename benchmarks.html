@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Resultados — DOM2parser</title>
+<meta name="description" content="Resultados de compressão do DOM2parser nas 6 páginas HTML reais usadas como corpus de teste.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗜️</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <nav class="nav">
+    <a class="nav-brand" href="index.html">🗜️ DOM2parser</a>
+    <div class="nav-links">
+      <a href="index.html">Início</a>
+      <a href="architecture.html">Arquitetura</a>
+      <a href="decisions.html">Decisões</a>
+      <a href="usage.html">Uso</a>
+      <a href="benchmarks.html" class="active">Resultados</a>
+      <a href="https://github.com/bonafe/DOM2parser">GitHub ↗</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+
+<h1>Resultados</h1>
+<p class="lede">
+  Medido contra 6 páginas HTML reais em <code>examples/</code> — não sintéticas —
+  cobrindo layouts de tabela legado, SPAs Vue, CKAN, Drupal, um site de notícias
+  moderno e um snapshot do WhatsApp Web.
+</p>
+
+<table>
+  <thead>
+    <tr><th>Página</th><th class="num">Original</th><th class="num">Compacto</th><th class="num">Redução</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Banco do Brasil (fatura de cartão)</td><td class="num">237.764</td><td class="num">7.549</td><td class="num badge-good">96,8%</td></tr>
+    <tr><td>gov.br — acervo de dados técnicos</td><td class="num">107.274</td><td class="num">11.215</td><td class="num badge-good">89,5%</td></tr>
+    <tr><td>gov.br — conjuntos de dados (CKAN)</td><td class="num">421.532</td><td class="num">11.066</td><td class="num badge-good">97,4%</td></tr>
+    <tr><td>Fiocruz — dados abertos (Drupal)</td><td class="num">277.357</td><td class="num">6.843</td><td class="num badge-good">97,5%</td></tr>
+    <tr><td>Folha de S.Paulo — DeltaFolha</td><td class="num">1.040.660</td><td class="num">27.723</td><td class="num badge-good">97,3%</td></tr>
+    <tr><td>WhatsApp Web (snapshot)</td><td class="num">1.211.832</td><td class="num">21.160</td><td class="num badge-good">98,3%</td></tr>
+  </tbody>
+</table>
+<p class="lede" style="font-size:0.95rem">Caracteres; a contagem de tokens (aproximação chars/4 sem <code>tiktoken</code> instalado) acompanha a mesma proporção.</p>
+
+<h2>Amostras de saída real</h2>
+
+<h3>Banco do Brasil — 122 transações isoladas de um layout de tabelas legado aninhadas</h3>
+<pre><code>tr > td > div.lancamentos > table > tbody > tr
+  count: 122
+  signature: DATE | TEXT | CURRENCY | MONEY
+  examples:
+    ['28/07', 'PGTO DEBITO CONTA 6937 000000253 200211', 'R$', '-11.966,18']  # numeric-outlier
+    ['03/08', 'OBA HORTIFRUTI INDAIAT INDAIATUBA BR', 'R$', '99,97']          # representative-position
+    ['13/06', 'ASSOCIACAO DA PARC 03/12 OURINHOS BR', 'R$', '377,91']         # numeric-outlier</code></pre>
+<p>O maior débito da fatura (<code>-11.966,18</code>) e o maior crédito aparecem automaticamente como outliers — sem precisar enviar as outras 120 linhas ao LLM.</p>
+
+<h3>Fiocruz (Drupal) — 11 recursos de dataset, campo sempre-vazio preservado como sinal</h3>
+<pre><code>div.region.region-content > ... > div.view-content > div.views-row
+  count: 11
+  signature: TEXT | EMPTY | TEXT
+  examples:
+    ['Processos (2016 a 2018) CSV', '', 'Download do dicionário de dados']
+    ['Bolsistas (CSV)', '', 'Download do dicionário de dados']
+    ['Patrimônio (CSV)', '', 'Download do dicionário de dados']</code></pre>
+
+<h3>CKAN (gov.br) — mesma classe CSS, tipos de conteúdo diferentes, corretamente distinguidos</h3>
+<pre><code>div > div.container-lg > ... > div.container.my-2.search-result > a > div.conjuto-dados.row
+  count: 2
+  signature: EMPTY | TEXT | FILE_FORMAT | COUNT_LABELED
+  examples:
+    ['', 'Bilheteria da Funarte Por FUNARTE - Fundação Nacional de Artes...',
+     'CSV', '1 Recursos0 Reusos209 Downloads0 Seguidores']</code></pre>
+
+<h2>Limitações conhecidas</h2>
+<div class="callout warn">
+  O ranking de relevância (a etapa mais heurística do pipeline) foi validado apenas
+  contra estas 6 páginas. Em <code>folhadesp.html</code>, o cluster da lista principal
+  de notícias (106 itens) fica em <strong>3º lugar</strong> no ranking final, não em
+  1º — os dois clusters à frente também são estruturalmente legítimos, apenas menos
+  centrais ao conteúdo da página. Isso é esperado e documentado em
+  <a href="decisions.html">decisões de arquitetura</a>: pesos de ranking devem evoluir
+  à medida que mais páginas reais forem testadas.
+</div>
+<div class="callout">
+  Todas as métricas acima vêm da suíte de testes automatizada
+  (<code>tests/test_eval_harness.py</code>) rodada contra os arquivos reais em
+  <code>examples/</code> — reproduza com <code>pytest -q</code> após clonar o repositório.
+</div>
+
+</main>
+
+<footer>
+  <p>Parte da documentação do <a href="index.html">DOM2parser</a> · <a href="https://github.com/bonafe/DOM2parser">código-fonte</a></p>
+</footer>
+
+</body>
+</html>

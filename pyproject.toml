@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dom2parser"
+version = "0.1.0"
+description = "Compress large HTML documents into a compact structural representation for LLM-driven parser generation."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "lxml>=5.0",
+    "cssselect>=1.2",
+    "PyYAML>=6.0",
+]
+
+[project.urls]
+Homepage = "https://bonafe.github.io/DOM2parser/"
+Repository = "https://github.com/bonafe/DOM2parser"
+Documentation = "https://bonafe.github.io/DOM2parser/architecture.html"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+tokens = [
+    "tiktoken>=0.7",
+]
+
+[project.scripts]
+dom2parser = "dom2parser.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dom2parser*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

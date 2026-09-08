@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Uso e API — DOM2parser</title>
+<meta name="description" content="Como instalar, usar e testar o DOM2parser — referência da API compress().">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗜️</text></svg>">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <nav class="nav">
+    <a class="nav-brand" href="index.html">🗜️ DOM2parser</a>
+    <div class="nav-links">
+      <a href="index.html">Início</a>
+      <a href="architecture.html">Arquitetura</a>
+      <a href="decisions.html">Decisões</a>
+      <a href="usage.html" class="active">Uso</a>
+      <a href="benchmarks.html">Resultados</a>
+      <a href="https://github.com/bonafe/DOM2parser">GitHub ↗</a>
+    </div>
+  </nav>
+</header>
+
+<main>
+
+<h1>Uso e API</h1>
+<p class="lede">Instalação, quickstart e referência da API pública.</p>
+
+<div class="toc">
+  <strong>Nesta página</strong>
+  <ul>
+    <li><a href="#instalacao">Instalação</a></li>
+    <li><a href="#quickstart">Quickstart</a></li>
+    <li><a href="#api">Referência da API</a></li>
+    <li><a href="#cli">CLI de teste/demo</a></li>
+    <li><a href="#dev">Desenvolvimento</a></li>
+  </ul>
+</div>
+
+<h2 id="instalacao">Instalação</h2>
+<p>Ainda não publicado no PyPI — instale a partir do repositório clonado:</p>
+<pre><code>git clone https://github.com/bonafe/DOM2parser.git
+cd DOM2parser
+
+python3 -m venv .venv
+source .venv/bin/activate
+
+pip install -e .</code></pre>
+<div class="callout">
+  O ambiente do host pode ser <em>externally-managed</em> (PEP 668) — o venv acima é
+  obrigatório, não opcional, em distros recentes (Debian/Ubuntu).
+</div>
+
+<h2 id="quickstart">Quickstart</h2>
+<pre><code>import dom2parser
+
+html = open("pagina.html", encoding="utf-8").read()
+result = dom2parser.compress(html)
+
+print(result.text)
+# REPEATED STRUCTURES (ranked by relevance):
+#
+# tr > td > div.lancamentos > table > tbody > tr
+#   count: 122
+#   signature: DATE | TEXT | CURRENCY | MONEY
+#   examples:
+#     ['28/07', 'PGTO DEBITO CONTA...', 'R$', '-11.966,18']  # numeric-outlier
+#     ...
+
+print(result.reduction["reduction_pct"])
+# {'chars': 96.8, 'tokens': 96.8}</code></pre>
+
+<h2 id="api">Referência da API</h2>
+
+<h3><code>dom2parser.compress(html, *, max_clusters=10, min_cluster_size=2, max_samples_per_cluster=7)</code></h3>
+<table>
+  <thead><tr><th>Parâmetro</th><th>Tipo</th><th>Descrição</th></tr></thead>
+  <tbody>
+    <tr><td><code>html</code></td><td><code>str</code></td><td>HTML completo a comprimir.</td></tr>
+    <tr><td><code>max_clusters</code></td><td><code>int</code></td><td>Máximo de clusters no relatório final.</td></tr>
+    <tr><td><code>min_cluster_size</code></td><td><code>int</code></td><td>Descarta clusters com menos instâncias que isso.</td></tr>
+    <tr><td><code>max_samples_per_cluster</code></td><td><code>int</code></td><td>Máximo de exemplos mostrados por cluster.</td></tr>
+  </tbody>
+</table>
+
+<p>Retorna um <code>CompactRepresentation</code>:</p>
+<table>
+  <thead><tr><th>Campo</th><th>Tipo</th><th>Descrição</th></tr></thead>
+  <tbody>
+    <tr><td><code>.text</code></td><td><code>str</code></td><td>Representação em texto estruturado.</td></tr>
+    <tr><td><code>.json</code></td><td><code>list[dict]</code></td><td>Mesma informação em JSON, um dict por cluster.</td></tr>
+    <tr><td><code>.reduction</code></td><td><code>dict</code></td><td>Contagem de chars/tokens original vs. compacto e % de redução.</td></tr>
+  </tbody>
+</table>
+
+<h3>Formato de cada cluster no JSON</h3>
+<pre><code>{
+  "path": "tr > td > div.lancamentos > table > tbody > tr",
+  "count": 122,
+  "signature": ["DATE", "TEXT", "CURRENCY", "MONEY"],
+  "examples": [
+    {"value": ["28/07", "PGTO DEBITO...", "R$", "-11.966,18"],
+     "reasons": ["representative-position", "numeric-outlier"]}
+  ],
+  "optional_fields": {
+    "img[class=seloBronze]": {"present": 6, "total": 10}
+  },
+  "rank_score": 15.04
+}</code></pre>
+
+<h2 id="cli">CLI de teste/demo</h2>
+<p>
+  Um wrapper fino existe para inspecionar o pipeline manualmente durante o
+  desenvolvimento — <strong>não é a interface principal do projeto</strong>, que é a
+  biblioteca:
+</p>
+<pre><code>python -m dom2parser.cli caminho/para/pagina.html</code></pre>
+
+<h2 id="dev">Desenvolvimento</h2>
+<pre><code># setup
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# rodar toda a suíte (inclui regressão contra os 6 exemplos reais em examples/)
+pytest -q
+
+# spike isolado de avaliação do HtmlRAG (ver decisions.html#adr-001)
+python scripts/measure_htmlrag.py examples/bancodobrasil.html</code></pre>
+<p>
+  A suíte de testes usa <code>tests/fixtures/ground_truth.yaml</code> como gabarito:
+  para cada uma das 6 páginas reais em <code>examples/</code>, anota qual seletor CSS
+  corresponde ao conteúdo relevante e qual corresponde ao ruído dominante conhecido
+  (menu, widget de filtro, JSON de bootstrap). <code>tests/test_eval_harness.py</code>
+  é a suíte de regressão principal do projeto: verifica que o ranking sempre coloca o
+  conteúdo relevante acima do ruído conhecido nas 6 páginas.
+</p>
+
+</main>
+
+<footer>
+  <p>Parte da documentação do <a href="index.html">DOM2parser</a> · <a href="https://github.com/bonafe/DOM2parser">código-fonte</a></p>
+</footer>
+
+</body>
+</html>

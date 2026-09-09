@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from lxml import etree
 
+from .cluster.families import build_families
 from .cluster.rank import rank_clusters, select_top_level_clusters
 from .cluster.siblings import cluster_siblings
 from .compact import render_json as _render_json
@@ -53,10 +54,13 @@ def compress(
 
     ranked = rank_clusters(clusters)
     selected = select_top_level_clusters(ranked, max_clusters=max_clusters)
-    samples = [(cs, sample_cluster(cs.cluster, max_samples=max_samples_per_cluster)) for cs in selected]
+    families = build_families(selected, ranked)
+    for family in families:
+        for member in family.members:
+            member.sample = sample_cluster(member.cluster, max_samples=max_samples_per_cluster)
 
-    text = _render_text.render(samples)
-    json_repr = _render_json.render(samples)
+    text = _render_text.render(families)
+    json_repr = _render_json.render(families)
     reduction = reduction_report(html, text)
 
     return CompactRepresentation(text=text, json=json_repr, reduction=reduction)

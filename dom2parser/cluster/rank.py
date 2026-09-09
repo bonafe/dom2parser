@@ -155,6 +155,22 @@ def rank_clusters(clusters: list[Cluster]) -> list[ClusterScore]:
     return sorted(scored, key=lambda cs: cs.score, reverse=True)
 
 
+RICH_SIGNATURE_MIN_FIELDS = 2
+
+
+def is_rich_signature(content_signature: tuple[str, ...]) -> bool:
+    """A signature is "rich" -- informative enough on its own that a
+    descendant/covered cluster would be redundant with it -- when it has
+    at least 2 fields and at least one of them is a specific type rather
+    than generic TEXT/EMPTY/URL. Shared by `select_top_level_clusters`
+    (descendant suppression) and `cluster.families` (container detection),
+    which both need the same "is this cluster substantive enough to stand
+    in for what's nested inside/under it" test."""
+    return len(content_signature) >= RICH_SIGNATURE_MIN_FIELDS and any(
+        t not in GENERIC_SIGNATURE_TYPES for t in content_signature
+    )
+
+
 def select_top_level_clusters(ranked: list[ClusterScore], max_clusters: int = 10) -> list[ClusterScore]:
     """Greedily take the highest-ranked clusters, skipping any whose
     elements are descendants of an already-selected cluster's elements.
@@ -181,31 +197,32 @@ def select_top_level_clusters(ranked: list[ClusterScore], max_clusters: int = 10
     bancodobrasil.html's legacy-nested-table case, just one level up in
     the DOM instead of down.
     """
-    RICH_SIGNATURE_MIN_FIELDS = 2
-
-    def _is_rich(content_signature: tuple[str, ...]) -> bool:
-        return len(content_signature) >= RICH_SIGNATURE_MIN_FIELDS and any(
-            t not in GENERIC_SIGNATURE_TYPES for t in content_signature
-        )
-
     selected: list[ClusterScore] = []
     covered: set = set()
     for cs in ranked:
         elements = cs.cluster.elements
-        if any(_has_covered_ancestor(el, covered) for el in elements):
+        if any(has_covered_ancestor(el, covered) for el in elements):
             continue
         selected.append(cs)
-        if _is_rich(cs.cluster.content_signature):
+        if is_rich_signature(cs.cluster.content_signature):
             covered.update(elements)
         if len(selected) >= max_clusters:
             break
     return selected
 
 
-def _has_covered_ancestor(el, covered: set) -> bool:
+def has_covered_ancestor(el, covered: set) -> bool:
+    """True if some ancestor of `el` is in `covered`. Shared by
+    `select_top_level_clusters` (descendant suppression) and
+    `cluster.families` (container-of-a-repeater detection), which both need
+    to test "is this element nested inside one of these other elements"."""
     node = el.getparent()
     while node is not None:
         if node in covered:
             return True
         node = node.getparent()
     return False
+
+
+# Backwards-compatible alias for the original private name.
+_has_covered_ancestor = has_covered_ancestor

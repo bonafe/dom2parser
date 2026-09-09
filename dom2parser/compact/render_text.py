@@ -1,11 +1,16 @@
-"""Fase H: render selected (cluster, sample) pairs into the structured
-text format sketched in the spec (`REPEATED STRUCTURE: ... x N`,
-`signature: ...`, `examples: [...]`)."""
+"""Fase H: render selected families into the structured text format
+sketched in the spec (`REPEATED STRUCTURE: ... x N`, `signature: ...`,
+`examples: [...]`). A family with a single member and no linked container
+renders exactly as the original flat block (path/count/signature/examples/
+optional_fields); a family with several role variants and/or a linked
+container renders as one nested block, so an LLM sees "this is one
+repeated structure with these row types" instead of several unrelated
+blocks that happen to share a DOM shape."""
 
 from __future__ import annotations
 
-from ..dom_utils import collapse_whitespace, direct_children_text, full_text
 from ..cluster.siblings import optional_fields
+from ..dom_utils import collapse_whitespace, direct_children_text, full_text
 from .paths import describe_path
 
 MAX_FIELD_LEN = 200
@@ -26,34 +31,48 @@ def _describe_field_key(key: tuple) -> str:
     return f"{tag}[{kind}={value}]"
 
 
-def render_cluster(cluster_score, sample) -> str:
-    cluster = cluster_score.cluster
-    path = describe_path(cluster.elements[0]) if cluster.elements else "?"
-    lines = [f"{path}", f"  count: {cluster.count}"]
-
+def _member_body_lines(member, indent: str) -> list[str]:
+    cluster = member.cluster
+    lines = []
     if cluster.content_signature:
-        lines.append(f"  signature: {' | '.join(cluster.content_signature)}")
+        lines.append(f"{indent}signature: {' | '.join(cluster.content_signature)}")
 
-    lines.append("  examples:")
-    for i in sample.indices:
+    lines.append(f"{indent}examples:")
+    for i in member.sample.indices:
         el = cluster.elements[i]
-        reasons = ",".join(sample.reasons.get(i, []))
-        lines.append(f"    {_example_repr(el, cluster.content_signature)!r}  # {reasons}")
+        reasons = ",".join(member.sample.reasons.get(i, []))
+        lines.append(f"{indent}  {_example_repr(el, cluster.content_signature)!r}  # {reasons}")
 
     opt = optional_fields(cluster)
     if opt:
-        lines.append("  optional_fields:")
+        lines.append(f"{indent}optional_fields:")
         for key, count in opt.items():
-            lines.append(f"    {_describe_field_key(key)}: present in {count}/{cluster.count}")
+            lines.append(f"{indent}  {_describe_field_key(key)}: present in {count}/{cluster.count}")
+    return lines
 
+
+def render_family(family) -> str:
+    path = describe_path(family.primary.cluster.elements[0]) if family.primary.cluster.elements else "?"
+
+    if len(family.members) == 1 and family.container_path is None:
+        member = family.members[0]
+        lines = [path, f"  count: {member.cluster.count}"]
+        lines.extend(_member_body_lines(member, "  "))
+        return "\n".join(lines)
+
+    lines = [path]
+    if family.container_path is not None:
+        lines.append(f"  container: {family.container_path} (count: {family.container_count})")
+    lines.append("  row types:")
+    for member in family.members:
+        lines.append(f"    [{member.role}] count: {member.cluster.count}")
+        lines.extend(_member_body_lines(member, "      "))
     return "\n".join(lines)
 
 
-def render(selected: list[tuple]) -> str:
-    """`selected` is a list of (ClusterScore, Sample) pairs, highest-ranked
-    first (see cluster.rank.select_top_level_clusters + sampling)."""
+def render(families: list) -> str:
     blocks = ["REPEATED STRUCTURES (ranked by relevance):", ""]
-    for cluster_score, sample in selected:
-        blocks.append(render_cluster(cluster_score, sample))
+    for family in families:
+        blocks.append(render_family(family))
         blocks.append("")
     return "\n".join(blocks).rstrip() + "\n"

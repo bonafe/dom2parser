@@ -20,21 +20,31 @@ their exact DOM shape are the single highest-ranked cluster on the page.
 So `build_families` looks past `selected` into the full `ranked` list to
 pull in same-`structural_key` siblings regardless of their independent
 rank, up to a small cap.
+
+It also corrects a related pre-existing issue in `cluster_siblings()`:
+since that function groups purely by DOM fingerprint + content signature,
+with no notion of "true ancestor location", a single `Cluster` can
+already span two genuinely unrelated places on the page that happen to
+collide on both (see `_split_by_true_path`). Every cluster is resolved
+into homogeneous, honestly-scored per-location pieces before any
+family/role/container decision is made -- otherwise elements from one
+location would get silently misfiled into another location's family.
 """
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
 from ..compact.paths import describe_path
 from ..dom_utils import direct_children_text
 from . import roles
-from .rank import ClusterScore, is_rich_signature
+from .rank import ClusterScore, is_rich_signature, score_cluster
 from .siblings import Cluster
 
 DEFAULT_MAX_VARIANTS_PER_FAMILY = 5
 CONTAINER_COVERAGE_THRESHOLD = 0.8
+MIN_RESOLVED_CLUSTER_SIZE = 2
 
 
 @dataclass
@@ -67,19 +77,99 @@ def _sample_text(cluster: Cluster) -> tuple[str, ...]:
 
 
 def _pick_primary(members: list[ClusterScore]) -> ClusterScore:
-    """The primary/dominant member of a family is its most content-bearing
-    variant, never merely its most numerous one -- a page's blank spacer
-    rows can easily outnumber its real records (bancodobrasil.html has 14
-    all-EMPTY rows vs. 3 real header/id rows sharing the same shape), so
-    raw `count` must never be allowed to outrank actual informativeness."""
+    """The primary/dominant member of a family is its most common
+    non-degenerate variant -- excluding all-EMPTY signatures (a page's
+    blank spacer rows can easily outnumber its real records:
+    bancodobrasil.html has 14 all-EMPTY rows vs. 3 real header/id rows
+    sharing the same shape), raw `count` decides it.
+
+    Type-richness (`non_generic`) is only a tie-break for near-equal
+    counts, never allowed to override count on its own -- otherwise a
+    single misclassified field in a handful of otherwise-ordinary records
+    can hijack "primary" away from the page's actual dominant record type.
+    Verified on bancodobrasil_2.html: 2 transaction rows whose description
+    happens to start with a digit ("2 LAB SANTA P PARC 02/02...") get one
+    field classified as COUNT_LABELED instead of TEXT, which used to make
+    that 2-row variant "richer" (4 non-generic fields vs. 3) than the 140
+    real transaction rows it's actually a minor content variant of --
+    count must win first so the 140-row pattern stays primary and the
+    2-row one is labeled a `variant` of it instead."""
 
     def informativeness(cs: ClusterScore) -> tuple:
         signature = cs.cluster.content_signature
         not_all_empty = bool(signature) and not all(t == "EMPTY" for t in signature)
         non_generic = sum(1 for t in signature if t not in ("EMPTY", "TEXT", "URL"))
-        return (not_all_empty, non_generic, cs.score)
+        return (not_all_empty, cs.cluster.count, non_generic, cs.score)
 
     return max(members, key=informativeness)
+
+
+def _split_by_true_path(cs: ClusterScore) -> list[ClusterScore]:
+    """`cluster_siblings()` groups elements by DOM fingerprint + content
+    signature alone -- it has no notion of "true ancestor location", so a
+    single `Cluster` can already contain elements from two genuinely
+    different places on the page that happen to share both a fingerprint
+    and a signature (verified on bancodobrasil_2.html: its all-EMPTY
+    `tr(td,td,td,td)` cluster holds 11 rows truly inside
+    `div.lancamentos` plus 1 truly inside the outer `#fatura2 > table`,
+    and its all-TEXT one similarly mixes 2 `div.lancamentos` rows with 1
+    outer-table row). Trusting `elements[0]`'s path for the whole cluster
+    (as `_family_key` does) would then silently misfile the *other*
+    elements into the wrong family. Split any such heterogeneous cluster
+    into one homogeneous piece per true path, re-scored so each piece can
+    be ranked/selected on its own honest merits."""
+    cluster = cs.cluster
+    if not cluster.elements:
+        return [cs]
+
+    groups: dict[str, list] = defaultdict(list)
+    for el in cluster.elements:
+        groups[describe_path(el)].append(el)
+    if len(groups) == 1:
+        return [cs]
+
+    pieces = []
+    for elements in groups.values():
+        sub_cluster = Cluster(
+            structural_key=cluster.structural_key,
+            content_signature=cluster.content_signature,
+            elements=elements,
+        )
+        pieces.append(score_cluster(sub_cluster))
+    return pieces
+
+
+def _resolve_by_true_path(scored: list[ClusterScore]) -> tuple[list[ClusterScore], dict]:
+    """Split every cluster in `scored` at most once, returning both the
+    flat resolved list and a map from each original cluster's `id()` to
+    its resolved pieces -- so a caller holding a second list that shares
+    objects with `scored` (e.g. `selected`, which is always a sub-list of
+    `ranked` by identity) can look up the SAME piece objects instead of
+    re-splitting and getting fresh, differently-identified duplicates for
+    what is really the same homogeneous group."""
+    resolved: list[ClusterScore] = []
+    origin: dict[int, list[ClusterScore]] = {}
+    for cs in scored:
+        pieces = [p for p in _split_by_true_path(cs) if p.cluster.count >= MIN_RESOLVED_CLUSTER_SIZE]
+        origin[id(cs)] = pieces
+        resolved.extend(pieces)
+    return resolved, origin
+
+
+def _resolve_selected(selected: list[ClusterScore], origin: dict) -> list[ClusterScore]:
+    resolved = []
+    seen_ids = set()
+    for cs in selected:
+        pieces = origin.get(id(cs))
+        if pieces is None:
+            # Defensive fallback -- shouldn't happen in practice, since
+            # `selected` is always a sub-list of `ranked` by identity.
+            pieces = [p for p in _split_by_true_path(cs) if p.cluster.count >= MIN_RESOLVED_CLUSTER_SIZE]
+        for piece in pieces:
+            if id(piece) not in seen_ids:
+                seen_ids.add(id(piece))
+                resolved.append(piece)
+    return resolved
 
 
 def _family_key(cs: ClusterScore) -> tuple:
@@ -147,7 +237,18 @@ def _find_container(
     contain the entire repeated table many levels down) never outranks a
     tighter, more specific one, mirroring the same "nearest wrapper, not
     just any wrapper" rationale `select_top_level_clusters` already
-    documents for descendant suppression."""
+    documents for descendant suppression.
+
+    `excluded_keys` must include every family key that will itself become
+    a top-level family (not just already-absorbed ones) -- otherwise a
+    member of some OTHER family can get mistaken for a container. Verified
+    on bancodobrasil.html: the transaction family's own `TEXT|TEXT|TEXT|
+    TEXT` header-row variant is the literal DOM parent of the
+    `td.tituloTabelaLancamento` header cells, which form their own
+    separate family; absorbing that header-row variant as the cell
+    family's "container" would silently delete the entire transaction
+    family it belongs to, since absorption drops a family by its shared
+    key, not by individual member."""
     if not family_elements:
         return None
 
@@ -194,7 +295,21 @@ def build_families(
     in `selected`, preserving `selected`'s relevance order (first-seen key
     wins position). Each family may pull in extra same-key variants from
     `ranked` that didn't independently make `selected`, and may absorb a
-    container cluster (excluded from becoming its own family)."""
+    container cluster (excluded from becoming its own family).
+
+    Both lists are first resolved through `_resolve_by_true_path` --
+    `cluster_siblings()` can hand back a single `Cluster` whose elements
+    span two genuinely different page locations (see that function's
+    docstring), so every cluster is split into per-true-path, honestly
+    scored pieces before any family/role/container decision is made.
+    `ranked` is resolved once and `selected` derived from the same
+    resolution (rather than resolved independently) so the two lists keep
+    sharing object identity for their common pieces -- otherwise the same
+    homogeneous piece would be split twice into two different objects and
+    wrongly appear as its own "extra" duplicate of itself."""
+    ranked, origin = _resolve_by_true_path(ranked)
+    selected = _resolve_selected(selected, origin)
+
     selected_by_key = _group_by_family_key(selected)
     ranked_by_key = _group_by_family_key(ranked)
 
@@ -206,15 +321,35 @@ def build_families(
         if key not in ordered_keys:
             ordered_keys.append(key)
 
-    families: list[Family] = []
-    absorbed_keys: set = set()
-
+    # Gather each family's members up front (independent of container
+    # detection) so we know, before searching for ANY container, which
+    # family keys have a "rich" primary -- a member of such a family (e.g.
+    # the transaction family's own `TEXT|TEXT|TEXT|TEXT` header-row
+    # variant) must never be absorbed as some OTHER family's container,
+    # since absorption drops a family by its shared key: that would
+    # silently delete the whole rich family it belongs to just because one
+    # of its minor variants also happens to be some other cluster's true
+    # DOM parent. A plain, non-rich container-shaped cluster (e.g.
+    # `div.lancamentos`, a single TEXT blob) stays absorbable even if it
+    # was independently selected as its own (uninteresting) family.
+    members_by_key: dict[tuple, list[ClusterScore]] = {}
     for key in ordered_keys:
         members = list(selected_by_key[key])
         extra = [cs for cs in ranked_by_key.get(key, []) if id(cs) not in already_selected_ids]
         extra.sort(key=lambda cs: cs.score, reverse=True)
         members.extend(extra[:max_variants_per_family])
+        members_by_key[key] = members
 
+    rich_family_keys = {
+        key for key, members in members_by_key.items()
+        if is_rich_signature(_pick_primary(members).cluster.content_signature)
+    }
+
+    families: list[Family] = []
+    absorbed_keys: set = set()
+
+    for key in ordered_keys:
+        members = members_by_key[key]
         primary_cs = _pick_primary(members)
         primary_signature = primary_cs.cluster.content_signature
 
@@ -232,7 +367,7 @@ def build_families(
         family = Family(family_key=key, members=family_members)
 
         family_elements = [el for cs in members for el in cs.cluster.elements]
-        container = _find_container(family_elements, ranked, key, absorbed_keys)
+        container = _find_container(family_elements, ranked, key, absorbed_keys | rich_family_keys)
         if container is not None:
             family.container_path = _describe_container(container.cluster)
             family.container_count = container.cluster.count

@@ -36,3 +36,29 @@ def test_bancodobrasil_default_output_includes_the_section_role_rows():
     )
     assert family["container"] is not None
     assert any(m["role"] == "section" and m["count"] == 12 for m in family["members"])
+
+
+def test_bancodobrasil_2_default_output_accounts_for_every_lancamentos_row():
+    # End-to-end regression test for two bugs found reviewing this second
+    # real fixture: (1) the dominant 140-row transaction pattern must stay
+    # "primary" despite a 2-row content-classifier quirk making it look
+    # momentarily "richer", and (2) every row under div.lancamentos must
+    # be accounted for across the family's members (no silent drops from
+    # a heterogeneous-cluster misattribution or an absorbed-container bug).
+    html = (EXAMPLES_DIR / "bancodobrasil_2.html").read_text(encoding="utf-8")
+    result = dom2parser.compress(html)
+
+    family = next(
+        entry for entry in result.json
+        if "members" in entry and any(m["count"] == 140 for m in entry["members"])
+    )
+    assert family["container"] is not None
+    primary = next(m for m in family["members"] if m["role"] == "primary")
+    assert primary["count"] == 140
+    assert primary["signature"] == ["DATE", "TEXT", "CURRENCY", "MONEY"]
+
+    # 140 transactions + 11 section rows + 11 blank rows + 3 summary rows
+    # + 2 misclassified-transaction variant + 2 header-row variant = 169
+    # (the page's 170th row is a lone, uncounted anomaly below the
+    # min-cluster-size-2 threshold).
+    assert sum(m["count"] for m in family["members"]) == 169

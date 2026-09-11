@@ -108,8 +108,8 @@ def test_hex_shaped_english_words_survive():
 
 
 def test_utility_class_digits_are_masked_per_token():
-    html = "<div class='col-md-6 card'><p>a</p></div>"
-    assert "div.card.col-md-*" in describe_path(_rows(html, "//p")[0])
+    html = "<div class='tier-2 card'><p>a</p></div>"
+    assert "div.card.tier-*" in describe_path(_rows(html, "//p")[0])
 
 
 def test_cache_returns_same_segments():

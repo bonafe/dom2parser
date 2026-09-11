@@ -58,6 +58,10 @@ def extract_records(record_entry, root) -> list[Record]:
         for name, (xpath, attribute) in locators.items():
             hits = xpath(element)
             values[name] = _value_of(hits[0], attribute) if hits else ""
+        if not locators:
+            # A record with no discovered fields is still a record -- a
+            # glossary <dd>, a tag link -- and its own text is the value.
+            values = {"_text": text_of(element)}
         reason = _skip_reason(values, record_entry.skip_when)
         out.append(Record(index=index, values=values, skipped=reason is not None, skip_reason=reason))
     return out

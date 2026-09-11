@@ -1,0 +1,64 @@
+# What a human would extract from each public corpus page.
+#
+# `record.selector` names the element a consumer would call one record,
+# resolved with lxml.cssselect against the raw document. `span` is how
+# many consecutive siblings make up one record when the page spreads a
+# record across several (Hacker News: athing + subtext + spacer rows).
+#
+# `expected_fields` lists names the page itself provides -- a header row,
+# `th` cells, a semantic class -- so deriving them is a matter of reading,
+# not guessing. `min_fields` is used where the page gives no names and
+# only the number of values a consumer would want can be stated.
+
+- file: iana_http_status_codes.html
+  record:
+    selector: "table.sortable > tbody > tr"
+    count: 75
+  expected_fields: [value, description, reference]
+
+- file: wikipedia_countries_by_population.html
+  record:
+    selector: "table.wikitable tbody tr"
+    count: 242
+    note: includes the th header row, which the executor skips as all-empty
+  expected_fields: [location, population, date]
+  noise:
+    - selector: "ol.references > li"
+      count: 286
+      note: citation list; outranks nothing here but must not shatter or absorb the table
+
+- file: books_toscrape.html
+  record:
+    selector: "article.product_pod"
+    count: 20
+  min_fields: 4
+  note: title text, product url, image src, price -- the rating lives in a class and is out of reach today
+
+- file: quotes_toscrape.html
+  record:
+    selector: "div.quote"
+    count: 10
+  expected_fields: [text, author]
+
+- file: hackernews_front.html
+  record:
+    selector: "tr.athing"
+    count: 30
+    span: 3
+  min_fields: 5
+  note: rank, title, title url, site, plus points/user/age/comments from the subtext row
+
+- file: python_glossary.html
+  record:
+    selector: "dl.glossary > dt"
+    count: 177
+    span: 2
+  min_fields: 2
+  note: term (dt) and definition (dd)
+
+- file: python_library_index.html
+  record:
+    selector: "li.toctree-l1"
+    count: 40
+  min_fields: 2
+  note: section title and url; each has a nested toctree-l2 list

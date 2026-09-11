@@ -11,6 +11,8 @@ import re
 DATE_RE = re.compile(
     r"^\s*\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\s*$"  # 18/07 (year implicit) or 18/07/2026
     r"|^\s*\d{4}-\d{1,2}-\d{1,2}\s*$"  # ISO 2026-07-18
+    r"|^\s*\d{1,2}\s+[A-Za-z]{3,9}\.?\s+\d{4}\s*$"  # 13 Jun 2025, 6 set. 2026
+    r"|^\s*[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}\s*$"  # Jun 13, 2025
 )
 TIME_RE = re.compile(r"^\s*([01]?\d|2[0-3]):([0-5]\d)(:[0-5]\d)?\s*$")
 DATETIME_SEP_RE = re.compile(r"^\s*(\S+)\s+(\S+)\s*$")
@@ -89,8 +91,32 @@ def match_percentage(text: str) -> str | None:
     return text if PERCENTAGE_RE.match(text) else None
 
 
+def _strip_currency_affix(text: str) -> str:
+    """`£51.77` -> `51.77`, `R$ 51,77` -> `51,77`, `12.00 USD` -> `12.00`.
+    A sign stays on the amount: `-R$ 10,00` -> `-10,00`."""
+    sign = ""
+    body = text
+    if body.startswith("-"):
+        sign, body = "-", body[1:].lstrip()
+    lowered = body.lower()
+    for token in sorted(CURRENCY_TOKENS, key=len, reverse=True):
+        if lowered.startswith(token):
+            body = body[len(token):].lstrip()
+            break
+        if lowered.endswith(token):
+            body = body[: -len(token)].rstrip()
+            break
+    return sign + body
+
+
 def match_money(text: str) -> str | None:
-    if MONEY_BR_RE.match(text) or MONEY_US_RE.match(text):
+    """An amount with exactly two fractional digits, with or without a
+    currency symbol attached. The symbol-less form is what the Banco do
+    Brasil statement uses (currency sits in its own column); every price
+    listing in the public corpus attaches it (`£51.77`), and without this
+    none of them classified as anything but TEXT."""
+    body = _strip_currency_affix(text)
+    if MONEY_BR_RE.match(body) or MONEY_US_RE.match(body):
         return text
     return None
 

@@ -61,9 +61,14 @@ def test_a_link_field_captures_its_href_not_its_text():
             "</ul>"
         )
     )
-    fields = {f.locator: f for f in discover(list(root.iter("li")))}
-    link = next(f for f in fields.values() if f.capture == "attr")
+    fields = discover(list(root.iter("li")))
+    by_capture = {(f.locator, f.capture): f for f in fields}
+    link = next(f for f in fields if f.capture == "attr")
     assert link.attribute == "href", f"expected href capture, got {link.attribute!r}"
+    # The same link also yields its visible text, as a sibling column named
+    # after it -- `first`/`second` is a value too, not just the destination.
+    assert (link.locator, "text") in by_capture, f"link text column missing: {[(f.name, f.capture) for f in fields]}"
+    assert link.name.endswith("_url"), f"attribute column should carry the text column's name plus a suffix, got {link.name!r}"
 
 
 def test_a_field_missing_from_some_records_is_optional():
@@ -72,15 +77,34 @@ def test_a_field_missing_from_some_records_is_optional():
             "<ul>"
             "<li class='r'><span class='n'>a</span><span class='opt'>x</span></li>"
             "<li class='r'><span class='n'>b</span></li>"
-            "<li class='r'><span class='n'>c</span></li>"
+            "<li class='r'><span class='n'>c</span><span class='opt'>y</span></li>"
+            "<li class='r'><span class='n'>d</span></li>"
             "</ul>"
         )
     )
     fields = {f.name: f for f in discover(list(root.iter("li")))}
     optional = [f for f in fields.values() if not f.required]
-    assert optional and optional[0].present < optional[0].total, (
-        f"expected an optional field, got {[(f.name, f.present, f.total) for f in fields.values()]}"
+    assert optional and optional[0].present == 2 and optional[0].total == 4, (
+        f"expected an optional field present in 2 of 4 records, got "
+        f"{[(f.name, f.present, f.total) for f in fields.values()]}"
     )
+
+
+def test_a_field_seen_in_a_single_record_is_not_a_field():
+    """The same bar `min_cluster_size` sets for structures: once is not a
+    pattern. This is what keeps a table's `th` header cells from becoming
+    fields of its data rows."""
+    root = stamp_uids(
+        parse_html(
+            "<ul>"
+            "<li class='r'><span class='n'>a</span><span class='once'>x</span></li>"
+            "<li class='r'><span class='n'>b</span></li>"
+            "<li class='r'><span class='n'>c</span></li>"
+            "</ul>"
+        )
+    )
+    names = [f.name for f in discover(list(root.iter("li")))]
+    assert "once" not in names, f"a value seen in one of three records became a field: {names}"
 
 
 def test_a_constant_prose_column_is_dropped_but_a_constant_currency_is_kept():
@@ -146,4 +170,7 @@ def test_bancodobrasil_statement_extracts_named_transactions():
         f"expected 123 rows carrying a conforming date, got {dated.present} present / "
         f"{dated.conforming} conforming"
     )
-    assert report.as_text().startswith("registros encontrados: 152")
+    # 154 matched: 2 header rows and 13 all-empty spacer rows are skipped,
+    # each reported with its reason rather than dropped.
+    assert report.skipped == 15
+    assert report.as_text().startswith("registros encontrados: 139")

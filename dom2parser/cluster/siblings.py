@@ -46,11 +46,11 @@ class Cluster:
 
 def group_by_fingerprint(
     elements: list[etree._Element],
-    build_artifact_attrs: frozenset[str] = frozenset(),
+    reused_ids: frozenset[str] = frozenset(),
 ) -> dict[tuple, list[etree._Element]]:
     groups: dict[tuple, list[etree._Element]] = defaultdict(list)
     for el in elements:
-        key = fingerprint_key(compute_fingerprint(el, build_artifact_attrs))
+        key = fingerprint_key(compute_fingerprint(el, reused_ids))
         groups[key].append(el)
     return groups
 
@@ -63,10 +63,10 @@ def content_signature_sequence(el: etree._Element) -> tuple[str, ...]:
 
 def cluster_siblings(
     elements: list[etree._Element],
-    build_artifact_attrs: frozenset[str] = frozenset(),
+    reused_ids: frozenset[str] = frozenset(),
 ) -> list[Cluster]:
     clusters: list[Cluster] = []
-    for structural_key, group_elements in group_by_fingerprint(elements, build_artifact_attrs).items():
+    for structural_key, group_elements in group_by_fingerprint(elements, reused_ids).items():
         by_content: dict[tuple, list] = defaultdict(list)
         for el in group_elements:
             by_content[content_signature_sequence(el)].append(el)
@@ -77,7 +77,7 @@ def cluster_siblings(
 
 def optional_field_presence(
     cluster: Cluster,
-    build_artifact_attrs: frozenset[str] = frozenset(),
+    reused_ids: frozenset[str] = frozenset(),
 ) -> Counter:
     """For each semantically-identifiable descendant fingerprint (i.e. one
     that resolved to testid/role/class/id, not bare tag+shape -- unlabeled
@@ -89,7 +89,7 @@ def optional_field_presence(
         for descendant in el.iter(etree.Element):
             if descendant is el:
                 continue
-            fp = compute_fingerprint(descendant, build_artifact_attrs)
+            fp = compute_fingerprint(descendant, reused_ids)
             if fp.identity[0] == "shape":
                 continue
             seen.add(fingerprint_key(fp))
@@ -100,11 +100,11 @@ def optional_field_presence(
 
 def optional_fields(
     cluster: Cluster,
-    build_artifact_attrs: frozenset[str] = frozenset(),
+    reused_ids: frozenset[str] = frozenset(),
 ) -> dict[tuple, int]:
     """Subset of optional_field_presence present in SOME but not ALL of the
     cluster's elements -- the "quase idênticos com campos opcionais" the
     spec calls out for the CKAN result cards."""
-    presence = optional_field_presence(cluster, build_artifact_attrs)
+    presence = optional_field_presence(cluster, reused_ids)
     n = cluster.count
     return {key: count for key, count in presence.items() if 0 < count < n}

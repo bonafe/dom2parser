@@ -11,18 +11,24 @@ they are *type* markers reused identically across every instance of a
 component (e.g. `data-testid="cell-frame-container"` on all 23 WhatsApp
 chat rows) -- exactly what's needed to group siblings.
 
-`id` is deliberately ranked below classes rather than first: by HTML
-convention an id is unique *per element*, so using it as the primary
-identity signal would make every instance fingerprint as unique and
-defeat clustering. It's kept as a fallback for the (invalid but real)
-case where a page reuses the same id across many elements as a de facto
-class (see `#btnDownloadUrl` x28 in acervodadostecnicosgovbr.html) --
-which is why the tests in test_fingerprint.py never need it to win,
-since classes are already available and preferred there too.
+`id` counts as identity ONLY when the document reuses it on more than
+one element. By HTML convention an id is unique per element, so a unique
+id says nothing about what *kind* of element this is -- and treating it
+as identity makes every instance fingerprint as unique and defeats
+clustering. The reused case is the (invalid but real) one where a page
+uses an id as a de facto class (`#btnDownloadUrl` x28 in
+acervodadostecnicosgovbr.html), and that is the only case worth keeping.
+
+The rule matters most on generated markup. MediaWiki's Parsoid stamps a
+unique `id="mwBlw"`-style token on 75% of all elements in a Wikipedia
+article; with unique ids as identity, a 242-row table shattered into
+clusters of 5, 22 and 16 rows and never produced a record selector.
+`reused_ids()` computes the set once per document; callers thread it.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 
 from lxml import etree
@@ -48,9 +54,16 @@ def _aria_signal(el: etree._Element) -> str | None:
     return None
 
 
+def reused_ids(root: etree._Element) -> frozenset[str]:
+    """The id values carried by more than one element of `root` -- the only
+    ids that can act as identity, since a unique id groups nothing."""
+    counts = Counter(el.get("id") for el in root.iter(etree.Element) if el.get("id"))
+    return frozenset(value for value, n in counts.items() if n >= 2)
+
+
 def compute_fingerprint(
     el: etree._Element,
-    build_artifact_attrs: frozenset[str] = frozenset(),
+    reused_ids: frozenset[str] = frozenset(),
 ) -> Fingerprint:
     tag = el.tag if isinstance(el.tag, str) else "?"
 
@@ -68,7 +81,7 @@ def compute_fingerprint(
         identity = ("class", classes)
     elif aria:
         identity = ("aria", aria)
-    elif el_id:
+    elif el_id and el_id in reused_ids:
         identity = ("id", el_id)
     else:
         identity = ("shape",)
@@ -98,9 +111,9 @@ def is_meaningful_candidate(fp: Fingerprint) -> bool:
 
 def filter_meaningful_candidates(
     elements,
-    build_artifact_attrs: frozenset[str] = frozenset(),
+    reused_ids: frozenset[str] = frozenset(),
 ):
-    return [el for el in elements if is_meaningful_candidate(compute_fingerprint(el, build_artifact_attrs))]
+    return [el for el in elements if is_meaningful_candidate(compute_fingerprint(el, reused_ids))]
 
 
 def fingerprint_key(fp: Fingerprint) -> tuple:

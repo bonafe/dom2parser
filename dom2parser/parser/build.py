@@ -19,17 +19,17 @@ from __future__ import annotations
 
 from lxml import etree
 
-from ..anchor import build_index, originals_for, stamp_uids
+from ..anchor import UID_ATTR, build_index, originals_for, stamp_uids
 from ..cluster.families import build_families
 from ..cluster.rank import rank_clusters, select_top_level_clusters
 from ..cluster.siblings import cluster_siblings
-from ..fingerprint.hashattrs import find_uniform_build_artifact_attrs
-from ..fingerprint.structural import filter_meaningful_candidates
+from ..fingerprint.hashattrs import semantic_class_tokens
+from ..fingerprint.structural import filter_meaningful_candidates, reused_ids
 from ..html_io import parse_html
 from ..sanitize import full_sanitize
 from .fields import relative_locator, _value_of, discover
 from .naming import slugify
-from .records import closure, promote
+from .records import closure, closure_of, promote
 from .selector import synthesize
 from .spec import SCHEMA_VERSION, FieldEntry, ParserSpec, RecordEntry
 
@@ -48,25 +48,40 @@ def _record_name(selector: str, taken: set[str]) -> str:
     return name
 
 
-def _best_level(family, clean, root, index, cache):
-    """The outermost promotion level with an exact selector."""
-    elements = originals_for(closure(family, clean, cache), index)
-    if not elements:
+def _has_identity(el) -> bool:
+    return bool(el.get("data-testid")) or bool(semantic_class_tokens(el.get("class", "")))
+
+
+def _best_level(family, clean, root, index, clean_index, cache, document_ids):
+    """The record boundary: among promotion levels with an exact selector,
+    the outermost one whose elements carry identity of their own, else the
+    outermost of all.
+
+    Identity breaks the tie between 1:1 wrappers. books.toscrape.com nests
+    `article.product_pod` inside a bare `li`; both select the same twenty
+    records, but a human names the article, and so does the ground truth.
+    Each level is re-closed before synthesis (see `records.closure_of`)."""
+    seed = closure(family, clean, cache, document_ids)
+    if not seed:
         return None, None, ()
 
-    best, inexact = None, []
-    for level in promote(elements):
-        result = synthesize(level, root)
+    exact, inexact = [], []
+    for level in promote(originals_for(seed, index)):
+        in_clean = [clean_index[uid] for el in level if (uid := el.get(UID_ATTR)) in clean_index]
+        completed = originals_for(closure_of(in_clean, clean, cache, document_ids), index) or level
+        result = synthesize(completed, root)
         if not result.ok:
             inexact.extend(result.near_misses)
         elif result.fit.precision == 1.0:
-            best = (level, result.fit)
+            exact.append((completed, result.fit))
         else:
             inexact.append(result.fit)
-    if best is None:
+    if not exact:
         inexact.sort(key=lambda f: (-f.recall, -f.precision, len(f.selector)))
         return None, None, tuple(inexact[:MAX_REPORTED_MISSES])
-    return best[0], best[1], ()
+    identified = [pair for pair in exact if _has_identity(pair[0][0])]
+    elements, fit = (identified or exact)[-1]
+    return elements, fit, ()
 
 
 def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[int, RecordEntry]]:
@@ -79,8 +94,13 @@ def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[i
     cache: dict = {}
     records, failures, taken = [], [], set()
     by_family: dict[int, RecordEntry] = {}
+    emitted: set[frozenset] = set()
+    document_ids = reused_ids(clean)
+    clean_index = build_index(clean)
     for position, family in enumerate(families):
-        elements, fit, near_misses = _best_level(family, clean, root, index, cache)
+        elements, fit, near_misses = _best_level(
+            family, clean, root, index, clean_index, cache, document_ids
+        )
         if fit is None:
             failures.append(
                 {
@@ -99,9 +119,24 @@ def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[i
             )
             continue
 
+        # Several families (a card, the title inside it, the price inside
+        # it) routinely promote to the same record boundary. That is one
+        # record, not three -- measured as triplicate entries on three of
+        # seven public corpus pages.
+        record_set = frozenset(el.get(UID_ATTR) for el in elements)
+        if record_set in emitted:
+            continue
+        emitted.add(record_set)
+
         found = discover(elements)
         header_values = _header_values(elements, found)
-        skip_when = {"header_values": header_values} if header_values else {}
+        # A record whose every field is empty carries no information; it
+        # is a spacer row, or a header row whose cells are `th` where the
+        # locators expect `td`. Skipped, never dropped -- the executor
+        # reports it with its reason.
+        skip_when = {"all_empty": True}
+        if header_values:
+            skip_when["header_values"] = header_values
 
         entry = RecordEntry(
             name=_record_name(fit.selector, taken),
@@ -142,9 +177,9 @@ def build_spec(html: str, max_clusters: int = 10, min_cluster_size: int = 2) -> 
     clean = full_sanitize(root)
     index = build_index(root)
 
-    artifacts = find_uniform_build_artifact_attrs(clean)
-    candidates = filter_meaningful_candidates(list(clean.iter(etree.Element)), artifacts)
-    clusters = [c for c in cluster_siblings(candidates, artifacts) if c.count >= min_cluster_size]
+    document_ids = reused_ids(clean)
+    candidates = filter_meaningful_candidates(list(clean.iter(etree.Element)), document_ids)
+    clusters = [c for c in cluster_siblings(candidates, document_ids) if c.count >= min_cluster_size]
     ranked = rank_clusters(clusters)
     families = build_families(select_top_level_clusters(ranked, max_clusters=max_clusters), ranked)
     return specs_for_families(families, clean, root, index)[0]

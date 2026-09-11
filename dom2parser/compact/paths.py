@@ -36,6 +36,12 @@ _UUID = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F
 _HEX_RUN = r"(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{6,}"
 _VOLATILE_RUN_RE = re.compile(f"{_UUID}|{_HEX_RUN}|\\d+")
 _MIN_BARE_PREFIX = 3
+# Two names sharing a 2-letter prefix is coincidence (`apple`/`avocado`);
+# two hundred distinct siblings all starting with the same two letters is
+# a generator. MediaWiki's Parsoid stamps `id="mwBlw"`, `id="mwCTE"`, ...
+# on every element, which is exactly that shape and defeats the
+# separator and length rules below.
+_MANY_SIBLINGS = 5
 
 
 @dataclass(frozen=True)
@@ -67,7 +73,9 @@ def _shared_prefix(values: list[str]) -> str:
     sep = max(prefix.rfind("-"), prefix.rfind("_"))
     if sep >= 0:
         return prefix[: sep + 1]
-    return prefix if len(prefix) >= _MIN_BARE_PREFIX else ""
+    if len(prefix) >= _MIN_BARE_PREFIX:
+        return prefix
+    return prefix if len(prefix) >= 2 and len(values) >= _MANY_SIBLINGS else ""
 
 
 def _same_tag_sibling_values(el, tag: str, attr: str) -> list[str]:

@@ -18,8 +18,7 @@ from dataclasses import dataclass
 from lxml import etree
 from lxml.cssselect import CSSSelector
 
-from ..fingerprint.hashattrs import find_uniform_build_artifact_attrs
-from ..fingerprint.structural import filter_meaningful_candidates
+from ..fingerprint.structural import filter_meaningful_candidates, reused_ids
 from ..sanitize.strip import sanitize as basic_sanitize
 from ..cluster.siblings import cluster_siblings
 from ..cluster.rank import rank_clusters
@@ -44,10 +43,10 @@ class RankCheckResult:
 
 def discover_and_rank(root: etree._Element):
     clean = basic_sanitize(root)
-    build_artifacts = find_uniform_build_artifact_attrs(clean)
+    document_ids = reused_ids(clean)
     all_elements = list(clean.iter(etree.Element))
-    candidates = filter_meaningful_candidates(all_elements, build_artifacts)
-    clusters = [c for c in cluster_siblings(candidates, build_artifacts) if c.count >= MIN_CLUSTER_SIZE]
+    candidates = filter_meaningful_candidates(all_elements, document_ids)
+    clusters = [c for c in cluster_siblings(candidates, document_ids) if c.count >= MIN_CLUSTER_SIZE]
     return clean, rank_clusters(clusters)
 
 

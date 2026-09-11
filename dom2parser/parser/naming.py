@@ -70,6 +70,34 @@ def header_names(rows: list[list[str]]) -> list[str] | None:
     return [slugify(v) for v in widest] if len(widest) == len(max(rows, key=len)) else None
 
 
+def table_header_cells(records: list) -> list[str] | None:
+    """Column labels from a table's `th` row, in column order, when the
+    records are that table's rows.
+
+    Distinct from `header_names`, which finds a header row hiding among
+    the records with `td` cells (bancodobrasil.html). Here the header is
+    marked up as such -- `th` in a `thead` or a leading row -- so it can be
+    read without any shape heuristic. Both the IANA registry and the
+    Wikipedia population table name their columns this way, and neither
+    got a single name from the cascade until this existed."""
+    first = records[0]
+    if first.tag != "tr":
+        return None
+    table = first.getparent()
+    while table is not None and table.tag != "table":
+        table = table.getparent()
+    if table is None:
+        return None
+    for row in table.iter("tr"):
+        cells = [c for c in row if isinstance(c.tag, str) and c.tag in ("th", "td")]
+        if cells and all(c.tag == "th" for c in cells):
+            # itertext, not text_content: a `<br>` inside a header cell
+            # separates words that text_content would glue together
+            # (`Source (official or from<br>the United Nations)`).
+            return [collapse_whitespace(" ".join(c.itertext())) for c in cells]
+    return None
+
+
 def _shared_prefix_stripped(names: list[str]) -> list[str]:
     """`views_field_title` / `views_field_body` -> `title` / `body`. A
     prefix every sibling field shares carries no information about which

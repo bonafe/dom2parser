@@ -9,7 +9,7 @@ from pathlib import Path
 from lxml.cssselect import CSSSelector
 
 from dom2parser.html_io import load_html_file
-from dom2parser.fingerprint.hashattrs import find_uniform_build_artifact_attrs
+from dom2parser.fingerprint.structural import reused_ids
 from dom2parser.cluster.siblings import (
     cluster_siblings,
     group_by_fingerprint,
@@ -72,7 +72,7 @@ def test_bancodobrasil_rows_share_dom_shape_but_split_by_content_signature():
 
 def test_acervo_resource_rows_single_cluster_full_count():
     root = load_html_file(EXAMPLES_DIR / "acervodadostecnicosgovbr.html")
-    build_artifacts = find_uniform_build_artifact_attrs(root)
+    build_artifacts = reused_ids(root)
     rows = CSSSelector("div.row.flex.mb-5")(root)
     clusters = cluster_siblings(rows, build_artifacts)
     assert sum(c.count for c in clusters) == 28

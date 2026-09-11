@@ -25,7 +25,7 @@ from dom2parser.cluster.rank import rank_clusters, select_top_level_clusters
 from dom2parser.cluster.roles import ROLE_PRIMARY, ROLE_SECTION, ROLE_SUMMARY, ROLE_VARIANT
 from dom2parser.cluster.siblings import Cluster, cluster_siblings
 from dom2parser.compact.paths import describe_path
-from dom2parser.fingerprint.hashattrs import find_uniform_build_artifact_attrs
+from dom2parser.fingerprint.structural import reused_ids
 from dom2parser.fingerprint.structural import filter_meaningful_candidates
 from dom2parser.html_io import load_html_file, parse_html
 from dom2parser.sanitize import full_sanitize
@@ -36,7 +36,7 @@ GROUND_TRUTH = yaml.safe_load((Path(__file__).parent / "fixtures" / "ground_trut
 
 def _families_for_root(root, max_clusters=10):
     clean = full_sanitize(root)
-    build_artifacts = find_uniform_build_artifact_attrs(clean)
+    build_artifacts = reused_ids(clean)
     all_elements = list(clean.iter(etree.Element))
     candidates = filter_meaningful_candidates(all_elements, build_artifacts)
     clusters = [c for c in cluster_siblings(candidates, build_artifacts) if c.count >= 2]

@@ -34,7 +34,8 @@ from lxml.etree import XPath
 from ..content.signature import classify
 from ..fingerprint.hashattrs import semantic_class_tokens
 from ..sanitize.strip import REMOVED_TAGS
-from .naming import resolve_names, text_of
+from .naming import resolve_names, slugify, table_header_cells, text_of
+
 
 # `CSSSelector` compiles to `descendant-or-self::`, so a locator like
 # `div` evaluated against a `div` record matches the record itself.
@@ -42,6 +43,7 @@ _TRANSLATOR = HTMLTranslator()
 
 CAPTURE_ATTRS = {"a": "href", "img": "src", "time": "datetime", "meta": "content", "input": "value"}
 MAX_FIELDS_PER_RECORD = 24
+MIN_FIELD_PRESENCE = 2
 SKIP_TAGS = frozenset(REMOVED_TAGS) | {"template-ref", "br", "wbr"}
 
 
@@ -74,9 +76,17 @@ def _is_text_leaf(el) -> bool:
     )
 
 
-def _capture_attr(el) -> str | None:
-    attr = CAPTURE_ATTRS.get(el.tag if isinstance(el.tag, str) else "")
-    return attr if attr and el.get(attr) else None
+def _capture_attrs(el) -> list[str]:
+    """Attributes worth a column of their own: the tag's canonical one
+    (`a` -> href, `img` -> src, `time` -> datetime) and a `title`, which
+    is where a card keeps the untruncated version of the text it shows."""
+    out = []
+    primary = CAPTURE_ATTRS.get(el.tag if isinstance(el.tag, str) else "")
+    if primary and el.get(primary):
+        out.append(primary)
+    if el.get("title") and el.get("title").strip():
+        out.append("title")
+    return out
 
 
 def _candidate_fields(record) -> list:
@@ -84,7 +94,7 @@ def _candidate_fields(record) -> list:
     for el in record.iter():
         if not isinstance(el.tag, str) or el.tag in SKIP_TAGS or el is record:
             continue
-        if _is_text_leaf(el) or _capture_attr(el):
+        if _is_text_leaf(el) or _capture_attrs(el):
             out.append(el)
     return out
 
@@ -127,8 +137,16 @@ def _locator_candidates(el, record) -> list[str]:
     while node is not None and node is not record:
         ancestors.append(node)
         node = node.getparent()
-    for ancestor in ancestors:
-        anchors = [s for s in _own_segments(ancestor) if s != ancestor.tag]
+    # A wrapper with no class of its own still anchors by position: the
+    # cells of a table row and the `h3` above a product title are the
+    # normal case, not the exception, and without `td:nth-of-type(3) > a`
+    # every linked table column and every titled card was unreachable.
+    anchors_by_ancestor = [
+        [s for s in _own_segments(ancestor) if s != ancestor.tag]
+        + ([_positional(ancestor)] if _positional(ancestor) else [])
+        for ancestor in ancestors
+    ]
+    for anchors in anchors_by_ancestor:
         for anchor in anchors:
             for segment in own:
                 out.append(f"{anchor} {segment}")
@@ -137,8 +155,8 @@ def _locator_candidates(el, record) -> list[str]:
     positional = _positional(el)
     if positional:
         out.append(positional)
-        for ancestor in ancestors:
-            for anchor in [s for s in _own_segments(ancestor) if s != ancestor.tag]:
+        for anchors in anchors_by_ancestor:
+            for anchor in anchors:
                 out.append(f"{anchor} > {positional}")
 
     seen, unique = set(), []
@@ -186,6 +204,79 @@ def _dominant_type(values: list[str]) -> str:
     return Counter(present).most_common(1)[0][0] if present else "EMPTY"
 
 
+# An attribute's type follows from what the attribute IS, not from how
+# its value happens to look: a relative `href` like `item?id=496520` is a
+# URL by construction, even though as text it classifies as TEXT.
+ATTRIBUTE_TYPES = {"href": "URL", "src": "URL", "datetime": "DATETIME"}
+
+
+def _column_type(values: list[str], attribute: str | None) -> str:
+    return ATTRIBUTE_TYPES.get(attribute or "", None) or _dominant_type(values)
+
+
+def _cell_index(resolved: list, records: list) -> int | None:
+    """Which table column a field lives in: the position, among the
+    record's `td`/`th` children, of the cell that contains the field.
+
+    Works for a value nested inside the cell (`td > a`, `td > span.nowrap`)
+    as well as for the bare cell, which is what lets a `th` header name it.
+    Mapping only bare `td:nth-of-type(k)` locators lost every linked column:
+    the IANA registry's `Reference` and Wikipedia's `Location`."""
+    for i, el in enumerate(resolved):
+        if el is None:
+            continue
+        record = records[i]
+        node = el
+        while node is not None and node.getparent() is not record:
+            node = node.getparent()
+        if node is None or node.tag not in ("td", "th"):
+            return None
+        cells = [c for c in record if isinstance(c.tag, str) and c.tag in ("td", "th")]
+        return cells.index(node)
+    return None
+
+
+def _unique(names: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    seen: dict[str, int] = {}
+    out = []
+    for name, source in names:
+        seen[name] = seen.get(name, 0) + 1
+        out.append((name if seen[name] == 1 else f"{name}_{seen[name]}", source))
+    return out
+
+
+def _shape(record) -> tuple:
+    """Direct children with their own children's tags, so a row that is
+    typical in cell count but not in cell content is not mistaken for the
+    typical row. Wikipedia's population table opens with a `World` row
+    whose name sits in `td > b > span`; every country's sits in `td > a`.
+    Counting only `td` made `World` the representative, and the one
+    locator that reached its name resolved nowhere else."""
+    return tuple(
+        (c.tag, tuple(g.tag for g in c if isinstance(g.tag, str) and g.tag not in SKIP_TAGS))
+        for c in record
+        if isinstance(c.tag, str) and c.tag not in SKIP_TAGS
+    )
+
+
+def _representative_indices(records: list) -> list[int]:
+    """Which records to enumerate field candidates from.
+
+    Never just the first one. On the Wikipedia population table
+    `records[0]` is the `th` header row, so every candidate came out as
+    `th:nth-of-type(k)` and resolved in exactly one of 196 rows; the names
+    were right only because the header-row heuristic happened to fire on
+    the same row. The record with the MODAL children shape is the typical
+    one. The record with the most children is added when its shape
+    differs, so an optional field that the typical record lacks is still
+    seen at all."""
+    shapes = [_shape(r) for r in records]
+    modal = Counter(shapes).most_common(1)[0][0]
+    typical = shapes.index(modal)
+    widest = max(range(len(records)), key=lambda i: len(shapes[i]))
+    return [typical] if shapes[widest] == modal else [typical, widest]
+
+
 def _prune(columns: list[tuple]) -> list[tuple]:
     """Drop fields that carry no per-record information.
 
@@ -203,10 +294,16 @@ def _prune(columns: list[tuple]) -> list[tuple]:
     for column in columns:
         _, values, attribute, _ = column
         present = [v for v in values if v]
-        if not present:
+        # Seen once is not a pattern -- the same bar `min_cluster_size`
+        # sets for a repeated structure. This is what keeps a header row's
+        # `th` cells from becoming fields of the data rows.
+        if len(present) < MIN_FIELD_PRESENCE:
             continue
+        # A constant `title` is furniture too (`title="upvote"` on every
+        # vote arrow); a constant href or src is not, since a link's
+        # destination is data even when every record points to one place.
         furniture = (
-            attribute is None
+            attribute in (None, "title")
             and len(present) == len(values)
             and len(set(present)) == 1
             and _dominant_type(values) in ("TEXT", "EMPTY")
@@ -222,35 +319,62 @@ def discover(records: list) -> list[FieldSpec]:
     if not records:
         return []
 
-    seen_signatures = set()
+    seen: set[tuple] = set()
     columns: list[tuple] = []
-    for el in _candidate_fields(records[0]):
-        attribute = _capture_attr(el)
-        locator, resolved = None, None
-        for candidate in _locator_candidates(el, records[0]):
-            resolved = _resolve(candidate, records)
-            if resolved is not None and resolved[0] is el:
-                locator = candidate
-                break
-        if locator is None:
-            continue
+    for source_index in _representative_indices(records):
+        source = records[source_index]
+        for el in _candidate_fields(source):
+            locator, resolved = None, None
+            for candidate in _locator_candidates(el, source):
+                found = _resolve(candidate, records)
+                if found is not None and found[source_index] is el:
+                    locator, resolved = candidate, found
+                    break
+            if locator is None:
+                continue
 
-        signature = tuple(id(r) if r is not None else None for r in resolved)
-        if signature in seen_signatures:
-            continue
-        seen_signatures.add(signature)
-
-        values = [_value_of(r, attribute) for r in resolved]
-        columns.append((locator, values, attribute, resolved))
+            signature = tuple(id(r) if r is not None else None for r in resolved)
+            captures: list[str | None] = list(_capture_attrs(el))
+            if any(r is not None and text_of(r) for r in resolved):
+                captures.append(None)
+            for capture in captures:
+                if (signature, capture) in seen:
+                    continue
+                seen.add((signature, capture))
+                columns.append((locator, [_value_of(r, capture) for r in resolved], capture, resolved))
 
     columns = _prune(columns)[:MAX_FIELDS_PER_RECORD]
     if not columns:
         return []
 
     rows = [[column[1][i] for column in columns] for i in range(len(records))]
-    types = [_dominant_type(column[1]) for column in columns]
-    first_elements = [column[3][0] for column in columns]
+    types = [_column_type(column[1], column[2]) for column in columns]
+    first_elements = [next(r for r in column[3] if r is not None) for column in columns]
     names = resolve_names(first_elements, rows, types)
+
+    header = table_header_cells(records)
+    if header:
+        named = []
+        for (name, source), column in zip(names, columns):
+            cell = _cell_index(column[3], records)
+            if cell is not None and cell < len(header) and header[cell]:
+                named.append((slugify(header[cell]), "th"))
+            else:
+                named.append((name, source))
+        names = named
+
+    # A link carries two values -- its text and its href -- and both were
+    # emitted as columns above. The attribute column takes the text
+    # column's name plus a suffix, so a consumer sees `title` and
+    # `title_url`, not `title` and `title_2`.
+    text_name_by_element = {id(c[3]): n for (n, _), c in zip(names, columns) if c[2] is None}
+    names = [
+        (f"{text_name_by_element[id(c[3])]}_{'url' if c[2] in ('href', 'src') else c[2]}", source)
+        if c[2] and id(c[3]) in text_name_by_element
+        else (name, source)
+        for (name, source), c in zip(names, columns)
+    ]
+    names = _unique(names)
 
     return [
         FieldSpec(

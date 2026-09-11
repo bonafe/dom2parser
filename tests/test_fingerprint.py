@@ -14,14 +14,14 @@ from dom2parser.fingerprint.hashattrs import (
     find_uniform_build_artifact_attrs,
     looks_like_atomic_class_token,
 )
-from dom2parser.fingerprint.structural import compute_fingerprint, fingerprint_key
+from dom2parser.fingerprint.structural import compute_fingerprint, fingerprint_key, reused_ids
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 
 
 def _fingerprints_for(filename, selector):
     root = load_html_file(EXAMPLES_DIR / filename)
-    build_artifacts = find_uniform_build_artifact_attrs(root)
+    build_artifacts = reused_ids(root)
     elements = CSSSelector(selector)(root)
     return [compute_fingerprint(el, build_artifacts) for el in elements]
 

@@ -18,8 +18,7 @@ from dom2parser.anchor import UID_ATTR, build_index, originals_for, stamp_uids
 from dom2parser.cluster.families import build_families
 from dom2parser.cluster.rank import rank_clusters, select_top_level_clusters
 from dom2parser.cluster.siblings import cluster_siblings
-from dom2parser.fingerprint.hashattrs import find_uniform_build_artifact_attrs
-from dom2parser.fingerprint.structural import filter_meaningful_candidates
+from dom2parser.fingerprint.structural import filter_meaningful_candidates, reused_ids
 from dom2parser.html_io import load_html_file, parse_html
 from dom2parser.parser.build import build_spec
 from dom2parser.parser.records import closure, promote
@@ -53,11 +52,12 @@ def _pipeline(path):
     root = stamp_uids(load_html_file(path))
     clean = full_sanitize(root)
     index = build_index(root)
-    artifacts = find_uniform_build_artifact_attrs(clean)
-    candidates = filter_meaningful_candidates(list(clean.iter(etree.Element)), artifacts)
-    clusters = [c for c in cluster_siblings(candidates, artifacts) if c.count >= 2]
+    document_ids = reused_ids(clean)
+    candidates = filter_meaningful_candidates(list(clean.iter(etree.Element)), document_ids)
+    clusters = [c for c in cluster_siblings(candidates, document_ids) if c.count >= 2]
     ranked = rank_clusters(clusters)
-    return root, clean, index, build_families(select_top_level_clusters(ranked, max_clusters=10), ranked)
+    families = build_families(select_top_level_clusters(ranked, max_clusters=10), ranked)
+    return root, clean, index, families, document_ids
 
 
 def _uids(elements):
@@ -66,13 +66,13 @@ def _uids(elements):
 
 @pytest.mark.parametrize("filename, selector", sorted(RECORD_GROUND_TRUTH.items()))
 def test_some_family_reaches_the_ground_truth_record_set_exactly(filename, selector):
-    root, clean, index, families = _pipeline(EXAMPLES_DIR / filename)
+    root, clean, index, families, document_ids = _pipeline(EXAMPLES_DIR / filename)
     expected = _uids(CSSSelector(selector)(root))
     cache = {}
 
     reached = []
     for family in families:
-        elements = originals_for(closure(family, clean, cache), index)
+        elements = originals_for(closure(family, clean, cache, document_ids), index)
         for level in promote(elements):
             if _uids(level) == expected:
                 reached.append(level)
@@ -85,12 +85,12 @@ def test_some_family_reaches_the_ground_truth_record_set_exactly(filename, selec
 
 @pytest.mark.parametrize("filename, selector", sorted(RECORD_GROUND_TRUTH.items()))
 def test_synthesized_selector_for_the_ground_truth_records_is_exact(filename, selector):
-    root, clean, index, families = _pipeline(EXAMPLES_DIR / filename)
+    root, clean, index, families, document_ids = _pipeline(EXAMPLES_DIR / filename)
     expected = _uids(CSSSelector(selector)(root))
     cache = {}
 
     for family in families:
-        for level in promote(originals_for(closure(family, clean, cache), index)):
+        for level in promote(originals_for(closure(family, clean, cache, document_ids), index)):
             if _uids(level) != expected:
                 continue
             result = synthesize(level, root)
@@ -126,13 +126,13 @@ def test_whatsapp_chat_rows_remain_a_declared_failure():
     two identity-less sibling divs, so the record boundary cannot be
     climbed to and the closure is double the real row count."""
     filename = next(iter(_KNOWN_FANOUT_LIMITATION))
-    root, clean, index, families = _pipeline(EXAMPLES_DIR / filename)
+    root, clean, index, families, document_ids = _pipeline(EXAMPLES_DIR / filename)
     expected = _uids(CSSSelector('div[data-testid="cell-frame-container"]')(root))
     cache = {}
     reached = any(
         _uids(level) == expected
         for family in families
-        for level in promote(originals_for(closure(family, clean, cache), index))
+        for level in promote(originals_for(closure(family, clean, cache, document_ids), index))
     )
     assert not reached, (
         "whatsapp chat rows now reach the ground-truth set -- the fan-out limitation is "

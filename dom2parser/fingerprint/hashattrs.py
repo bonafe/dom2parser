@@ -158,15 +158,51 @@ def discriminating_class_tokens(class_attr_value: str) -> tuple[str, ...]:
     return tuple(sorted(t for t in tokens if t and not looks_like_atomic_class_token(t)))
 
 
+_UTILITY_CLASS_PREFIX_RE = re.compile(
+    r"^(?:col|offset|order|g|gx|gy|row-cols"
+    r"|m|mt|mb|ml|mr|mx|my|ms|me|p|pt|pb|pl|pr|px|py|ps|pe|gap|space"
+    r"|w|h|min-w|min-h|max-w|max-h"
+    r"|d|flex|grid|justify|align|items|content|self|place|order"
+    r"|text|font|leading|tracking|whitespace|truncate"
+    r"|float|position|top|bottom|start|end|inset|z|overflow"
+    r"|border|rounded|shadow|bg|opacity|ring|outline"
+    r"|sm|md|lg|xl|xxl)-[a-z0-9.-]+$"
+)
+_UTILITY_CLASS_WORDS = frozenset(
+    {"row", "container", "container-fluid", "clearfix", "flex", "grid", "block", "inline", "inline-block"}
+)
+
+
+def looks_like_utility_class_token(token: str) -> bool:
+    """True for a Bootstrap/Tailwind-style LAYOUT class: `col-md-3`, `mb-5`,
+    `my-2`, `bg-white`, `font-light`, `row`, `container`.
+
+    A utility class says where the box sits and how it is painted, never
+    what it is -- every card on books.toscrape.com is wrapped in a
+    `li.col-xs-6.col-sm-4.col-md-3`, and treating that as identity made the
+    bare `li` outrank `article.product_pod` as the record. It also makes a
+    bad selector: `div.my-2` reached the ten CKAN result cards exactly, and
+    would survive precisely until the next spacing tweak.
+
+    Bare `text` and `flex` are handled apart: `span.text` on
+    quotes.toscrape.com is a real content class, so only the hyphenated
+    `text-*` forms are utilities, while `flex` alone is layout."""
+    lowered = token.lower()
+    return lowered in _UTILITY_CLASS_WORDS or bool(_UTILITY_CLASS_PREFIX_RE.match(lowered))
+
+
 def semantic_class_tokens(class_attr_value: str) -> tuple[str, ...]:
     """The subset of a `class` attribute's tokens considered safe identity
-    signals: real class names that are neither generated-looking nor a
-    record of transient UI state, order-independent."""
+    signals: real class names that are neither generated-looking, nor a
+    record of transient UI state, nor a layout utility -- order-independent."""
     tokens = (class_attr_value or "").split()
     return tuple(
         sorted(
             t
             for t in tokens
-            if t and not looks_like_atomic_class_token(t) and not looks_like_state_class_token(t)
+            if t
+            and not looks_like_atomic_class_token(t)
+            and not looks_like_state_class_token(t)
+            and not looks_like_utility_class_token(t)
         )
     )

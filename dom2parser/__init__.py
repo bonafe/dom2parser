@@ -19,8 +19,7 @@ from .cluster.siblings import cluster_siblings
 from .compact import render_json as _render_json
 from .compact import render_text as _render_text
 from .compact.tokens import reduction_report
-from .fingerprint.hashattrs import find_uniform_build_artifact_attrs
-from .fingerprint.structural import filter_meaningful_candidates
+from .fingerprint.structural import filter_meaningful_candidates, reused_ids
 from .html_io import parse_html
 from .parser.build import specs_for_families
 from .sanitize import full_sanitize
@@ -49,11 +48,11 @@ def compress(
     clean = full_sanitize(root)
     index = build_index(root)
 
-    build_artifacts = find_uniform_build_artifact_attrs(clean)
+    document_ids = reused_ids(clean)
     all_elements = list(clean.iter(etree.Element))
-    candidates = filter_meaningful_candidates(all_elements, build_artifacts)
+    candidates = filter_meaningful_candidates(all_elements, document_ids)
     clusters = [
-        c for c in cluster_siblings(candidates, build_artifacts) if c.count >= min_cluster_size
+        c for c in cluster_siblings(candidates, document_ids) if c.count >= min_cluster_size
     ]
 
     ranked = rank_clusters(clusters)

@@ -18,6 +18,7 @@ from lxml.cssselect import CSSSelector
 from dom2parser.anchor import UID_ATTR, stamp_uids
 from dom2parser.html_io import parse_html
 from dom2parser.parser.build import build_spec
+from dom2parser.parser.executor import execute
 
 CORPUS_DIR = Path(__file__).parent.parent / "corpus"
 GROUND_TRUTH = yaml.safe_load((CORPUS_DIR / "ground_truth.yaml").read_text())
@@ -49,11 +50,34 @@ def _uids(root, selector):
     return {el.get(UID_ATTR) for el in CSSSelector(selector)(root)}
 
 
+def _wraps_one_to_one(got: set, expected: set, root) -> bool:
+    """True when each matched element contains exactly one ground-truth
+    element and every one is covered -- the same records, read off a 1:1
+    wrapper.
+
+    data.gov nests `div.dataset-content` inside `li.usa-collection__item`,
+    and both carry a real class. Either is the record; insisting on the
+    exact element set would be pinning an implementation choice rather
+    than the answer. A wrapper that swallows two records, or misses one,
+    still fails -- which is the bug this file exists to catch."""
+    if len(got) != len(expected):
+        return False
+    by_uid = {uid: el for el in root.iter() if (uid := el.get(UID_ATTR)) in got}
+    covered = set()
+    for el in by_uid.values():
+        inside = {uid for d in el.iter() if (uid := d.get(UID_ATTR)) in expected}
+        if len(inside) != 1:
+            return False
+        covered |= inside
+    return covered == expected
+
+
 def _matching_record(entry):
     spec, root = _built(entry)
     expected = _uids(root, entry["record"]["selector"])
     for record in spec.records:
-        if _uids(root, record.selector) == expected:
+        got = _uids(root, record.selector)
+        if got == expected or _wraps_one_to_one(got, expected, root):
             return record
     return None
 
@@ -92,6 +116,30 @@ def test_enough_fields_are_discovered(entry):
         f"{entry['file']}: a consumer wants at least {entry['min_fields']} values per record, "
         f"got {[(f.name, f.type) for f in record.fields]}"
     )
+
+
+@pytest.mark.parametrize("entry", [p for p in _params("values") if "expected_values" in p.values[0]])
+def test_hand_read_values_come_out_of_the_extraction(entry):
+    """The check that separates "it looks right" from "it is right".
+
+    Every other test here is about shape: which elements the selector
+    reaches, how many fields, what they are called. This one compares
+    against values read by hand off the markup, so a locator that drifted
+    onto a wrapper, a value glued to its neighbour, or a title truncated
+    to its visible form is caught."""
+    record = _matching_record(entry)
+    assert record is not None, f"{entry['file']}: record not found, see the record test"
+    html = (CORPUS_DIR / entry["file"]).read_text(errors="replace")
+    extraction = execute(_built(entry)[0], html)[record.name]
+
+    for case in entry["expected_values"]:
+        values = extraction.records[case["index"]].values
+        got = list(values.values())
+        missing = [want for want in case["values"] if not any(want in v for v in got)]
+        assert not missing, (
+            f"{entry['file']} record {case['index']}: {missing} read off the page but not "
+            f"extracted; got {values}"
+        )
 
 
 @pytest.mark.parametrize("entry", list(_params("unique")))

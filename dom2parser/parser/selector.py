@@ -81,12 +81,12 @@ def _tag_of(elements) -> str:
     return tags.pop() if len(tags) == 1 else "*"
 
 
-def _attr_predicates(elements, attr: str) -> list[str]:
+def _attr_predicates(elements, attr: str, skip: frozenset = frozenset()) -> list[str]:
     """`[attr="v"]` when every target shares one value, `[attr^="p"]` when
     they share a prefix -- the per-instance-key case `compact.paths` masks
     to `*` (`list-item-0`, `list-item-1`, ...)."""
     values = [el.get(attr) for el in elements]
-    if not all(values):
+    if not all(values) or any(v in skip for v in values):
         return []
     distinct = sorted(set(values))
     if len(distinct) == 1:
@@ -109,13 +109,13 @@ def _class_predicates(elements) -> list[str]:
     return out
 
 
-def _self_segments(elements) -> list[str]:
+def _self_segments(elements, generated: frozenset = frozenset()) -> list[str]:
     """Selector fragments matching the targets by their own identity."""
     tag = _tag_of(elements)
     segments = [
         tag + pred
         for pred in _attr_predicates(elements, "data-testid")
-        + _attr_predicates(elements, "id")
+        + _attr_predicates(elements, "id", generated)
         + _class_predicates(elements)
     ]
     segments.append(tag)
@@ -151,19 +151,42 @@ def _ancestor_chain(element) -> list:
     return chain
 
 
-def _identified_segments(element) -> list[str]:
+def _positional(element) -> str | None:
+    """`table:nth-of-type(2)`, the element's place among its same-tag
+    siblings."""
+    parent = element.getparent()
+    if parent is None or not isinstance(element.tag, str):
+        return None
+    same = [sib for sib in parent if sib.tag == element.tag]
+    if len(same) < 2:
+        return None
+    return f"{element.tag}:nth-of-type({same.index(element) + 1})"
+
+
+def _identified_segments(element, generated: frozenset = frozenset()) -> list[str]:
     """Identity fragments for one element, excluding the bare tag -- a tag
-    alone anchors nothing."""
-    return [s for s in _self_segments([element]) if s != _tag_of([element])]
+    alone anchors nothing.
+
+    Position counts as identity when nothing else does. A page with four
+    `table.wikitable` needs `table.wikitable:nth-of-type(2)` to name the
+    second one; before this the only thing separating them was a Parsoid
+    id, which is exactly the anchor `generated_ids` now refuses."""
+    bare = _tag_of([element])
+    segments = [s for s in _self_segments([element], generated) if s != bare]
+    positional = _positional(element)
+    if positional:
+        segments += [f"{s}{positional[len(bare):]}" for s in segments]
+        segments.append(positional)
+    return segments
 
 
-def _candidates(targets) -> list[_Candidate]:
-    own_segments = _self_segments(targets)
+def _candidates(targets, generated: frozenset = frozenset()) -> list[_Candidate]:
+    own_segments = _self_segments(targets, generated)
     out = [_Candidate(own=segment) for segment in own_segments]
 
     chain = _ancestor_chain(targets[0])
     for depth, ancestor in enumerate(chain):
-        for anchor in _identified_segments(ancestor):
+        for anchor in _identified_segments(ancestor, generated):
             for segment in own_segments:
                 out.append(_Candidate(segment, anchor, " "))
                 out.append(_Candidate(segment, anchor, " > "))
@@ -244,7 +267,7 @@ def _evaluate(selector: str, root, target_uids: set[str]) -> tuple[SelectorFit, 
     return fit, extra
 
 
-def synthesize(targets, root) -> Synthesis:
+def synthesize(targets, root, generated_ids: frozenset = frozenset()) -> Synthesis:
     """Find the selector that reaches every element of `targets` in `root`
     while matching as little else as possible.
 
@@ -267,7 +290,8 @@ def synthesize(targets, root) -> Synthesis:
     # `article.product_pod` says which twenty it means.
     bare = _tag_of(targets)
     for candidate in sorted(
-        _candidates(targets), key=lambda c: (c.anchor is None and c.own == bare, len(c.render()))
+        _candidates(targets, generated_ids),
+        key=lambda c: (c.anchor is None and c.own == bare, len(c.render())),
     ):
         evaluated = _evaluate(candidate.render(), root, target_uids)
         if evaluated is None:

@@ -160,35 +160,59 @@ def discriminating_class_tokens(class_attr_value: str) -> tuple[str, ...]:
 
 _UTILITY_CLASS_PREFIX_RE = re.compile(
     r"^(?:col|offset|order|g|gx|gy|row-cols"
-    r"|m|mt|mb|ml|mr|mx|my|ms|me|p|pt|pb|pl|pr|px|py|ps|pe|gap|space"
-    r"|w|h|min-w|min-h|max-w|max-h"
-    r"|d|flex|grid|justify|align|items|content|self|place|order"
-    r"|text|font|leading|tracking|whitespace|truncate"
-    r"|float|position|top|bottom|start|end|inset|z|overflow"
-    r"|border|rounded|shadow|bg|opacity|ring|outline"
-    r"|sm|md|lg|xl|xxl)-[a-z0-9.-]+$"
+    r"|m|mt|mb|ml|mr|mx|my|ms|me|p|pt|pb|pl|pr|px|py|ps|pe|gap|space|margin|padding"
+    r"|w|h|min-w|min-h|max-w|max-h|maxw|minw|display"
+    r"|d|flex|grid|justify|align|items|content|self|place|order|v-align"
+    r"|text|font|leading|tracking|whitespace|truncate|lh|color|link"
+    r"|float|position|top|bottom|start|end|inset|z|overflow|wb"
+    r"|border|rounded|shadow|bg|opacity|ring|outline|anim|tmp"
+    r"|sm|md|lg|xl|xxl)(?:-|--)[a-z0-9.-]+$"
 )
+# Primer's type scale (`f1`..`f6`) and nothing else of that shape.
+_UTILITY_CLASS_SCALE_RE = re.compile(r"^f[1-6]$")
 _UTILITY_CLASS_WORDS = frozenset(
-    {"row", "container", "container-fluid", "clearfix", "flex", "grid", "block", "inline", "inline-block"}
+    {
+        "row", "container", "container-fluid", "clearfix", "flex", "grid",
+        "block", "inline", "inline-block", "border", "rounded", "no-underline",
+        "truncate", "unstyled", "wrap", "nowrap",
+    }
 )
 
 
 def looks_like_utility_class_token(token: str) -> bool:
-    """True for a Bootstrap/Tailwind-style LAYOUT class: `col-md-3`, `mb-5`,
-    `my-2`, `bg-white`, `font-light`, `row`, `container`.
+    """True for a Bootstrap/Tailwind/Primer-style LAYOUT class: `col-md-3`,
+    `mb-5`, `bg-white`, `lh-condensed`, `color-fg-muted`, `no-underline`,
+    `rounded`, `row`, `f3`.
 
     A utility class says where the box sits and how it is painted, never
     what it is -- every card on books.toscrape.com is wrapped in a
     `li.col-xs-6.col-sm-4.col-md-3`, and treating that as identity made the
-    bare `li` outrank `article.product_pod` as the record. It also makes a
-    bad selector: `div.my-2` reached the ten CKAN result cards exactly, and
-    would survive precisely until the next spacing tweak.
+    bare `li` outrank `article.product_pod` as the record. It is equally
+    bad as a name: GitHub's topic cards produced fields called
+    `no_underline`, `rounded` and `color_fg_muted`. And it makes a
+    selector that survives exactly until the next spacing tweak --
+    `div.my-2` reached the ten CKAN result cards precisely.
+
+    **This is a word list on purpose.** The obvious structural rule --
+    "a utility class is sprayed across many tags and contexts, a semantic
+    one marks one kind of element in one place" -- was measured across the
+    whole corpus and does not hold: `no-underline` appears 41 times on one
+    tag under one parent, and `toctree-l1` appears 40 times on one tag
+    under one parent. There is no signal in the document to separate them;
+    the difference is that one vocabulary is published by a CSS framework
+    and the other is the page author's. So the list is lexical, bounded,
+    and wrong at the edges, exactly like `looks_like_atomic_class_token`.
+    Do not spend another afternoon looking for the structural version.
 
     Bare `text` and `flex` are handled apart: `span.text` on
     quotes.toscrape.com is a real content class, so only the hyphenated
     `text-*` forms are utilities, while `flex` alone is layout."""
     lowered = token.lower()
-    return lowered in _UTILITY_CLASS_WORDS or bool(_UTILITY_CLASS_PREFIX_RE.match(lowered))
+    return (
+        lowered in _UTILITY_CLASS_WORDS
+        or bool(_UTILITY_CLASS_SCALE_RE.match(lowered))
+        or bool(_UTILITY_CLASS_PREFIX_RE.match(lowered))
+    )
 
 
 def semantic_class_tokens(class_attr_value: str) -> tuple[str, ...]:

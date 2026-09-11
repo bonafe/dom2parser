@@ -18,7 +18,7 @@ from dom2parser.anchor import UID_ATTR, build_index, originals_for, stamp_uids
 from dom2parser.cluster.families import build_families
 from dom2parser.cluster.rank import rank_clusters, select_top_level_clusters
 from dom2parser.cluster.siblings import cluster_siblings
-from dom2parser.fingerprint.structural import filter_meaningful_candidates, reused_ids
+from dom2parser.fingerprint.structural import filter_meaningful_candidates, generated_ids, reused_ids
 from dom2parser.html_io import load_html_file, parse_html
 from dom2parser.parser.build import build_spec
 from dom2parser.parser.records import closure, promote

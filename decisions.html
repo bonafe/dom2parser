@@ -347,6 +347,60 @@
 </p>
 </div>
 
+<div class="adr" id="adr-011">
+<h3>ADR-011 — Id gerado nunca ancora seletor; nome de campo precisa ser constante <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  Quatro páginas novas no corpus (Olympics com <code>rowspan</code>, data.gov, gov.br,
+  GitHub Topics) derrubaram três coisas de uma vez. O seletor emitido para a tabela da
+  Wikipédia era <code>tbody[id="mwhg"] tr</code> — um id que o Parsoid reinventa a cada
+  renderização, ou seja, um parser que só funciona até a próxima visita. No gov.br, cada
+  card tem <code>aria-label</code> com a própria manchete, e o campo saiu chamado
+  <code>estudantes_de_licenciatura_podem_se_inscrever_para_receber_bolsa…</code>. No
+  GitHub, campos viraram <code>no_underline</code>, <code>rounded</code> e
+  <code>color_fg_muted</code>.
+</p>
+<h4>Decisão</h4>
+<p>
+  <strong>Id gerado não ancora seletor.</strong> É gerado quando pertence a uma família
+  grande de mesmo prefixo de dois caracteres <em>e</em> o que vem depois é um token curto
+  e opaco: <code>mw</code>+<code>hg</code>, <code>0A</code>, <code>B_k</code>. Separador
+  não serve para decidir isso, embora pareça servir — os tokens do Parsoid são base64url
+  e trazem <code>-</code> e <code>_</code> próprios. Medido: 6671 dos 7699 ids da
+  Wikipédia são marcados, enquanto <code>term-*</code>, <code>section-*</code>,
+  <code>main-*</code>, <code>score_*</code> e <code>mw-aria-live-region</code> ficam
+  intactos. No lugar do id entra <strong>âncora posicional</strong>
+  (<code>section:nth-of-type(1) tr</code>), que é o que distingue quatro
+  <code>table.wikitable</code> irmãs de classes idênticas.
+</p>
+<p>
+  <strong>Nome de campo precisa de evidência constante.</strong> Um nome descreve a
+  coluna; valor que muda a cada registro é o <em>dado</em>. Antes de usar
+  <code>itemprop</code>, <code>aria-label</code> ou classe como nome, o valor é comparado
+  entre os elementos daquele campo em todos os registros — se difere, não é nome. É
+  medição, não palpite.
+</p>
+<h4>Consequências</h4>
+<p>
+  Classe utilitária continua sendo <strong>lista de palavras, de propósito</strong>. A
+  regra estrutural óbvia — "utilitária é espalhada por muitas tags e contextos, semântica
+  marca um tipo num lugar" — foi medida no corpus inteiro e <em>não se sustenta</em>:
+  <code>no-underline</code> aparece 41 vezes numa tag sob um pai, e
+  <code>toctree-l1</code> aparece 40 vezes numa tag sob um pai. Não há sinal no documento
+  que as separe; a diferença é que um vocabulário é publicado por um framework de CSS e o
+  outro é do autor da página. A lista é lexical e errada nas bordas, exatamente como
+  <code>looks_like_atomic_class_token</code> — e está registrada no código para ninguém
+  gastar outra tarde procurando a versão estrutural.
+</p>
+<p>
+  O placar do corpus ganhou a verificação que faltava: <strong>valores lidos à mão</strong>
+  da marcação têm de aparecer na extração. É a única que separa "o seletor e os nomes
+  parecem certos" de "o dado saiu certo" — ela pega locator que escorregou para um
+  invólucro, valor colado no vizinho, e título truncado na forma visível quando o
+  completo está num atributo.
+</p>
+</div>
+
 <hr>
 <p class="callout warn">
   <strong>Risco conhecido e aceito:</strong> o ranking de relevância (ADR-003, ADR-004)

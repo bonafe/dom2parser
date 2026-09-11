@@ -143,20 +143,48 @@ _TAG_NAMES = {
 }
 
 
-def _own_name(el) -> tuple[str, str] | None:
+def _own_name(el, constant) -> tuple[str, str] | None:
+    """A name off one element, taking only evidence `constant` accepts."""
     for attr, source in (("itemprop", "itemprop"), ("aria-label", "aria_label")):
         value = el.get(attr)
-        if value and value.strip():
+        if value and value.strip() and constant(attr):
             return slugify(value), source
     classes = semantic_class_tokens(el.get("class", ""))
-    if classes:
+    if classes and constant("class"):
         return slugify(classes[0]), "class"
     if el.tag in _TAG_NAMES:
         return _TAG_NAMES[el.tag], "tag"
     return None
 
 
-def element_name(el, scope=None) -> tuple[str, str] | None:
+def _constant_across(peers, depth: int):
+    """Whether an attribute has the same value on this field's element in
+    every record -- reading `depth` ancestors up, since a name may be
+    inherited from a wrapper.
+
+    A name describes the column; a value that changes per record is the
+    DATA. On agenciagov's news list every card's link carries
+    `aria-label="Estudantes de licenciatura podem se inscrever..."`, and
+    taking it literally named the field after one headline. Constancy is
+    the difference, and it is measured, not guessed."""
+
+    def constant(attr: str) -> bool:
+        seen = set()
+        for peer in peers:
+            node = peer
+            for _ in range(depth):
+                node = node.getparent() if node is not None else None
+            if node is None:
+                continue
+            seen.add(node.get(attr))
+            if len(seen) > 1:
+                return False
+        return True
+
+    return constant
+
+
+def element_name(el, scope=None, peers=()) -> tuple[str, str] | None:
     """A name read off one field element, with the evidence that produced
     it, or None when nothing says what the value is.
 
@@ -164,16 +192,20 @@ def element_name(el, scope=None) -> tuple[str, str] | None:
     News puts the story title in a bare `a` inside `span.titleline`, and a
     glossary definition is a bare `p` inside the `dd`. So the walk goes up
     to (not including) the scope, and takes the first ancestor that names
-    itself -- by class, or by a tag HTML gives a meaning to."""
-    own = _own_name(el)
+    itself -- by class, or by a tag HTML gives a meaning to.
+
+    `peers` are this same field's elements in the other records; evidence
+    that differs across them is data, not a name."""
+    peers = [p for p in peers if p is not None] or [el]
+    own = _own_name(el, _constant_across(peers, 0))
     if own is not None:
         return own
-    node = el.getparent()
+    node, depth = el.getparent(), 1
     while node is not None and node is not scope:
-        inherited = _own_name(node)
+        inherited = _own_name(node, _constant_across(peers, depth))
         if inherited is not None:
             return inherited[0], f"ancestor_{inherited[1]}"
-        node = node.getparent()
+        node, depth = node.getparent(), depth + 1
     if scope is not None and scope is not el and scope.tag in _TAG_NAMES:
         return _TAG_NAMES[scope.tag], "ancestor_tag"
     return None
@@ -184,6 +216,7 @@ def resolve_names(
     rows: list[list[str]],
     types: list[str],
     scopes: list | None = None,
+    peers: list | None = None,
 ) -> list[tuple[str, str]]:
     """Names for every field slot, as `(name, source)`.
 
@@ -194,9 +227,10 @@ def resolve_names(
         return [(name, "header_row") for name in from_header]
 
     scopes = scopes or [None] * len(field_elements)
+    peers = peers or [()] * len(field_elements)
     names, sources = [], []
     for slot, el in enumerate(field_elements):
-        derived = element_name(el, scopes[slot]) if el is not None else None
+        derived = element_name(el, scopes[slot], peers[slot]) if el is not None else None
         if derived is None:
             names.append(f"{types[slot].lower()}_{slot + 1}")
             sources.append("type_position")

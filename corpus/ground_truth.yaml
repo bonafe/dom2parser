@@ -9,12 +9,22 @@
 # `th` cells, a semantic class -- so deriving them is a matter of reading,
 # not guessing. `min_fields` is used where the page gives no names and
 # only the number of values a consumer would want can be stated.
+#
+# `expected_values` pins what the extraction must actually RETURN: values
+# read by hand off the page's markup, which must all appear among the
+# named record's values. This is the check that separates "the selector
+# and the names look right" from "the data came out right" -- a locator
+# that drifts onto a wrapper, a value glued to its neighbour, or a title
+# truncated to its visible form all pass every other check here.
 
 - file: iana_http_status_codes.html
   record:
     selector: "table.sortable > tbody > tr"
     count: 75
   expected_fields: [value, description, reference]
+  expected_values:
+    - index: 0
+      values: ["100", "Continue", "RFC9110, Section 15.2.1"]
 
 - file: wikipedia_countries_by_population.html
   record:
@@ -22,23 +32,48 @@
     count: 242
     note: includes the th header row, which the executor skips as all-empty
   expected_fields: [location, population, date]
+  expected_values:
+    - index: 2
+      values: ["India", "1,429,404,000", "17.3%", "1 Jul 2026"]
   noise:
     - selector: "ol.references > li"
       count: 286
-      note: citation list; outranks nothing here but must not shatter or absorb the table
+      note: citation list; must not shatter or absorb the table
+
+- file: wikipedia_olympics.html
+  record:
+    selector: "section:nth-of-type(1) table.wikitable tr"
+    count: 65
+    note: >
+      host cities. Four sibling wikitables share every class, so naming
+      this one needs a positional anchor; 69 of its cells carry rowspan,
+      and Parsoid stamps a generated id on almost every element.
+  min_fields: 4
+  expected_values:
+    - index: 1
+      values: ["Athens", "Greece", "1896", "Europe"]
 
 - file: books_toscrape.html
   record:
     selector: "article.product_pod"
     count: 20
   min_fields: 4
-  note: title text, product url, image src, price -- the rating lives in a class and is out of reach today
+  note: >
+    title text, product url, image src, price. The visible title is
+    truncated ("A Light in the ..."); the full one is in the link's
+    `title` attribute, so extracting it proves attribute capture.
+  expected_values:
+    - index: 0
+      values: ["A Light in the Attic", "£51.77"]
 
 - file: quotes_toscrape.html
   record:
     selector: "div.quote"
     count: 10
   expected_fields: [text, author]
+  expected_values:
+    - index: 0
+      values: ["Albert Einstein"]
 
 - file: hackernews_front.html
   record:
@@ -47,6 +82,9 @@
     span: 3
   min_fields: 5
   note: rank, title, title url, site, plus points/user/age/comments from the subtext row
+  expected_values:
+    - index: 0
+      values: ["1.", "map-yue2.github.io"]
 
 - file: python_glossary.html
   record:
@@ -54,7 +92,12 @@
     count: 177
     span: 2
   min_fields: 2
-  note: term (dt) and definition (dd)
+  note: >
+    term (dt) and definition (dd). Every term ends in a `¶` permalink
+    that is not part of it, and two terms share one definition.
+  expected_values:
+    - index: 2
+      values: ["abstract base class"]
 
 - file: python_library_index.html
   record:
@@ -62,3 +105,43 @@
     count: 40
   min_fields: 2
   note: section title and url; each has a nested toctree-l2 list
+
+- file: datagov_datasets.html
+  record:
+    selector: "div.dataset-content"
+    count: 20
+    note: >
+      USWDS markup: the wrapper carries only utility classes
+      (`margin-0`, `display-flex`), and each metadata item is a `strong`
+      label next to its value.
+  min_fields: 3
+  expected_values:
+    - index: 0
+      values: ["U.S. Environmental Protection Agency"]
+
+- file: gov_br_noticias.html
+  record:
+    selector: "li.noticia"
+    count: 8
+    note: >
+      Plone news cards. Every card's link carries an `aria-label` holding
+      that card's own headline, which is data and must never become a
+      field NAME.
+  min_fields: 3
+  expected_values:
+    - index: 0
+      values: ["Educação"]
+
+- file: github_topics.html
+  record:
+    selector: "div.container-lg > div > div > div"
+    count: 16
+    note: >
+      topic cards. The page has no semantic class anywhere on them --
+      only Primer utilities (`no-underline`, `rounded`, `color-fg-muted`,
+      `tmp-py-4`) -- so both the selector and the field names have to
+      fall back to position. That is the point of keeping it.
+  min_fields: 2
+  expected_values:
+    - index: 0
+      values: ["Awesome Lists"]

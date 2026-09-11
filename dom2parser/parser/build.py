@@ -24,7 +24,7 @@ from ..cluster.families import build_families
 from ..cluster.rank import rank_clusters, select_top_level_clusters
 from ..cluster.siblings import cluster_siblings
 from ..fingerprint.hashattrs import semantic_class_tokens
-from ..fingerprint.structural import filter_meaningful_candidates, reused_ids
+from ..fingerprint.structural import filter_meaningful_candidates, generated_ids, reused_ids
 from ..html_io import parse_html
 from ..sanitize import full_sanitize
 from .fields import capture_value, discover, is_decoration, relative_locator, scoped_element
@@ -52,7 +52,7 @@ def _has_identity(el) -> bool:
     return bool(el.get("data-testid")) or bool(semantic_class_tokens(el.get("class", "")))
 
 
-def _best_level(family, clean, root, index, clean_index, cache, document_ids):
+def _best_level(family, clean, root, index, clean_index, cache, document_ids, minted):
     """The record boundary: among promotion levels with an exact selector,
     the outermost one whose elements carry identity of their own, else the
     outermost of all.
@@ -69,7 +69,7 @@ def _best_level(family, clean, root, index, clean_index, cache, document_ids):
     for level in promote(originals_for(seed, index)):
         in_clean = [clean_index[uid] for el in level if (uid := el.get(UID_ATTR)) in clean_index]
         completed = originals_for(closure_of(in_clean, clean, cache, document_ids), index) or level
-        result = synthesize(completed, root)
+        result = synthesize(completed, root, minted)
         if not result.ok:
             inexact.extend(result.near_misses)
         elif result.fit.precision == 1.0:
@@ -100,7 +100,7 @@ def _best_level(family, clean, root, index, clean_index, cache, document_ids):
         shifted = shift_anchors(elements, offset)
         in_clean = [clean_index[uid] for el in shifted if (uid := el.get(UID_ATTR)) in clean_index]
         completed = originals_for(closure_of(in_clean, clean, cache, document_ids), index) or shifted
-        result = synthesize(completed, root)
+        result = synthesize(completed, root, minted)
         if result.ok and result.fit.precision == 1.0 and period(completed) > 1:
             return completed, result.fit, (), period(completed)
     return elements, fit, (), 1
@@ -118,10 +118,11 @@ def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[i
     by_family: dict[int, RecordEntry] = {}
     emitted: set[frozenset] = set()
     document_ids = reused_ids(clean)
+    minted = generated_ids(root)
     clean_index = build_index(clean)
     for position, family in enumerate(families):
         elements, fit, near_misses, span = _best_level(
-            family, clean, root, index, clean_index, cache, document_ids
+            family, clean, root, index, clean_index, cache, document_ids, minted
         )
         if fit is None:
             failures.append(

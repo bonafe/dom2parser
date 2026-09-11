@@ -494,7 +494,8 @@ def discover(records: list, span: int = 1) -> list[FieldSpec]:
     first_index = [next(i for i, r in enumerate(column[3]) if r is not None) for column in columns]
     first_elements = [column[3][i] for column, i in zip(columns, first_index)]
     scopes = [column[5][i] for column, i in zip(columns, first_index)]
-    names = resolve_names(first_elements, rows, types, scopes)
+    peers = [column[3] for column in columns]
+    names = resolve_names(first_elements, rows, types, scopes, peers)
 
     header = table_header_cells(records)
     if header:

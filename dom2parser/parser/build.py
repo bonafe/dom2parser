@@ -27,7 +27,7 @@ from ..fingerprint.hashattrs import find_uniform_build_artifact_attrs
 from ..fingerprint.structural import filter_meaningful_candidates
 from ..html_io import parse_html
 from ..sanitize import full_sanitize
-from .fields import discover
+from .fields import relative_locator, _value_of, discover
 from .naming import slugify
 from .records import closure, promote
 from .selector import synthesize
@@ -69,20 +69,17 @@ def _best_level(family, clean, root, index, cache):
     return best[0], best[1], ()
 
 
-def build_spec(html: str, max_clusters: int = 10, min_cluster_size: int = 2) -> ParserSpec:
-    root = stamp_uids(parse_html(html))
-    clean = full_sanitize(root)
-    index = build_index(root)
+def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[int, RecordEntry]]:
+    """Synthesize a parser for already-built families.
 
-    artifacts = find_uniform_build_artifact_attrs(clean)
-    candidates = filter_meaningful_candidates(list(clean.iter(etree.Element)), artifacts)
-    clusters = [c for c in cluster_siblings(candidates, artifacts) if c.count >= min_cluster_size]
-    ranked = rank_clusters(clusters)
-    families = build_families(select_top_level_clusters(ranked, max_clusters=max_clusters), ranked)
-
+    Returns the spec and a map from each family's position to the record it
+    produced, so a caller holding the same families (the compact renderers)
+    can show the selector and field names alongside the structure they
+    describe instead of re-deriving them."""
     cache: dict = {}
     records, failures, taken = [], [], set()
-    for family in families:
+    by_family: dict[int, RecordEntry] = {}
+    for position, family in enumerate(families):
         elements, fit, near_misses = _best_level(family, clean, root, index, cache)
         if fit is None:
             failures.append(
@@ -106,36 +103,51 @@ def build_spec(html: str, max_clusters: int = 10, min_cluster_size: int = 2) -> 
         header_values = _header_values(elements, found)
         skip_when = {"header_values": header_values} if header_values else {}
 
-        records.append(
-            RecordEntry(
-                name=_record_name(fit.selector, taken),
-                selector=fit.selector,
-                count=len(elements),
-                fields=[
-                    FieldEntry(
-                        name=f.name,
-                        locator=f.locator,
-                        type=f.type,
-                        capture=f.capture,
-                        attribute=f.attribute,
-                        required=f.required,
-                        present=f.present,
-                        total=f.total,
-                        name_source=f.name_source,
-                    )
-                    for f in found
-                ],
-                skip_when=skip_when,
-                verified={
-                    "matched": fit.matched,
-                    "expected": fit.expected,
-                    "precision": round(fit.precision, 4),
-                    "recall": round(fit.recall, 4),
-                },
-            )
+        entry = RecordEntry(
+            name=_record_name(fit.selector, taken),
+            selector=fit.selector,
+            count=len(elements),
+            fields=[
+                FieldEntry(
+                    name=f.name,
+                    locator=f.locator,
+                    type=f.type,
+                    capture=f.capture,
+                    attribute=f.attribute,
+                    required=f.required,
+                    present=f.present,
+                    total=f.total,
+                    name_source=f.name_source,
+                )
+                for f in found
+            ],
+            skip_when=skip_when,
+            verified={
+                "matched": fit.matched,
+                "expected": fit.expected,
+                "precision": round(fit.precision, 4),
+                "recall": round(fit.recall, 4),
+            },
+            provenance={"family_index": position},
         )
+        records.append(entry)
+        by_family[position] = entry
 
-    return ParserSpec(schema_version=SCHEMA_VERSION, records=records, failures=failures)
+    spec = ParserSpec(schema_version=SCHEMA_VERSION, records=records, failures=failures)
+    return spec, by_family
+
+
+def build_spec(html: str, max_clusters: int = 10, min_cluster_size: int = 2) -> ParserSpec:
+    root = stamp_uids(parse_html(html))
+    clean = full_sanitize(root)
+    index = build_index(root)
+
+    artifacts = find_uniform_build_artifact_attrs(clean)
+    candidates = filter_meaningful_candidates(list(clean.iter(etree.Element)), artifacts)
+    clusters = [c for c in cluster_siblings(candidates, artifacts) if c.count >= min_cluster_size]
+    ranked = rank_clusters(clusters)
+    families = build_families(select_top_level_clusters(ranked, max_clusters=max_clusters), ranked)
+    return specs_for_families(families, clean, root, index)[0]
 
 
 def _header_values(elements, found) -> list[str] | None:
@@ -143,9 +155,8 @@ def _header_values(elements, found) -> list[str] | None:
     when the field names were read off that row in the first place."""
     if not found or not all(f.name_source == "header_row" for f in found):
         return None
-    from .fields import _relative, _value_of
 
-    locators = [(_relative(f.locator), f.attribute) for f in found]
+    locators = [(relative_locator(f.locator), f.attribute) for f in found]
     for element in elements:
         values = []
         for xpath, attribute in locators:
@@ -156,4 +167,4 @@ def _header_values(elements, found) -> list[str] | None:
     return None
 
 
-__all__ = ["build_spec"]
+__all__ = ["build_spec", "specs_for_families"]

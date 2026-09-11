@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from lxml import etree
 
+from .anchor import build_index, stamp_uids, to_original
 from .cluster.families import build_families
 from .cluster.rank import rank_clusters, select_top_level_clusters
 from .cluster.siblings import cluster_siblings
@@ -21,6 +22,7 @@ from .compact.tokens import reduction_report
 from .fingerprint.hashattrs import find_uniform_build_artifact_attrs
 from .fingerprint.structural import filter_meaningful_candidates
 from .html_io import parse_html
+from .parser.build import specs_for_families
 from .sanitize import full_sanitize
 from .sampling.representative import sample_cluster
 
@@ -32,8 +34,9 @@ DEFAULT_MAX_SAMPLES_PER_CLUSTER = 7
 @dataclass
 class CompactRepresentation:
     text: str
-    json: list
+    json: dict
     reduction: dict
+    parser: object
 
 
 def compress(
@@ -42,8 +45,9 @@ def compress(
     min_cluster_size: int = DEFAULT_MIN_CLUSTER_SIZE,
     max_samples_per_cluster: int = DEFAULT_MAX_SAMPLES_PER_CLUSTER,
 ) -> CompactRepresentation:
-    root = parse_html(html)
+    root = stamp_uids(parse_html(html))
     clean = full_sanitize(root)
+    index = build_index(root)
 
     build_artifacts = find_uniform_build_artifact_attrs(clean)
     all_elements = list(clean.iter(etree.Element))
@@ -59,8 +63,19 @@ def compress(
         for member in family.members:
             member.sample = sample_cluster(member.cluster, max_samples=max_samples_per_cluster)
 
-    text = _render_text.render(families)
-    json_repr = _render_json.render(families)
+    spec, by_family = specs_for_families(families, clean, root, index)
+    originals = {
+        id(el): original
+        for family in families
+        for member in family.members
+        for el in member.cluster.elements
+        if (original := to_original(el, index)) is not None
+    }
+
+    text = _render_text.render(families, by_family, spec.failures)
+    json_repr = _render_json.render(families, spec, by_family, originals)
     reduction = reduction_report(html, text)
 
-    return CompactRepresentation(text=text, json=json_repr, reduction=reduction)
+    return CompactRepresentation(
+        text=text, json=json_repr, reduction=reduction, parser=spec
+    )

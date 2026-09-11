@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
+from functools import lru_cache
 
 from lxml.cssselect import CSSSelector
 
@@ -42,6 +43,10 @@ MAX_ANCESTOR_LEVELS = 4
 MAX_CLASS_TOKENS = 6
 MAX_CLASS_COMBO = 3
 MAX_NEAR_MISSES = 5
+# Refining an over-matching candidate is only worth doing for the few that
+# came closest; every page has many that will never be exact.
+MAX_REFINED_CANDIDATES = 12
+MAX_REFINEMENTS_PER_CANDIDATE = 8
 
 
 @dataclass(frozen=True)
@@ -206,9 +211,22 @@ def _differentiating_classes(extra, targets, classes_of) -> list[str]:
     return sorted(common)
 
 
-def _evaluate(selector: str, root, target_uids: set[str]) -> tuple[SelectorFit, list] | None:
+@lru_cache(maxsize=4096)
+def _compile(selector: str):
+    """Compiling a selector is the dominant cost of the search -- the same
+    fragments recur across candidates and across families of one page."""
     try:
-        matched = CSSSelector(selector)(root)
+        return CSSSelector(selector)
+    except Exception:
+        return None
+
+
+def _evaluate(selector: str, root, target_uids: set[str]) -> tuple[SelectorFit, list] | None:
+    compiled = _compile(selector)
+    if compiled is None:
+        return None
+    try:
+        matched = compiled(root)
     except Exception:
         return None
     if not matched:
@@ -238,7 +256,13 @@ def synthesize(targets, root) -> Synthesis:
 
     complete: list[SelectorFit] = []
     misses: list[SelectorFit] = []
-    for candidate in _candidates(targets):
+    overshooting: list[tuple[_Candidate, list]] = []
+
+    # Shortest first, so the simplest exact selector is found early and the
+    # rest of the search can be abandoned. Without this the candidate set
+    # is scanned in full: measured at 84k evaluations and 77s on
+    # acervodadostecnicosgovbr.html.
+    for candidate in sorted(_candidates(targets), key=lambda c: len(c.render())):
         evaluated = _evaluate(candidate.render(), root, target_uids)
         if evaluated is None:
             continue
@@ -246,9 +270,13 @@ def synthesize(targets, root) -> Synthesis:
         if fit.recall < 1.0:
             misses.append(fit)
             continue
-        complete.append(fit)
         if fit.precision == 1.0:
-            continue
+            return Synthesis(fit=fit)
+        complete.append(fit)
+        if len(overshooting) < MAX_REFINED_CANDIDATES:
+            overshooting.append((candidate, extra))
+
+    for candidate, extra in overshooting:
         refinements = [
             candidate.excluding(cls, on_anchor=False)
             for cls in _differentiating_classes(extra, targets, _own_classes)
@@ -258,10 +286,13 @@ def synthesize(targets, root) -> Synthesis:
                 candidate.excluding(cls, on_anchor=True)
                 for cls in _differentiating_classes(extra, targets, _ancestor_classes)
             ]
-        for refined in refinements:
+        for refined in refinements[:MAX_REFINEMENTS_PER_CANDIDATE]:
             scored = _evaluate(refined.render(), root, target_uids)
-            if scored is not None and scored[0].recall == 1.0:
-                complete.append(scored[0])
+            if scored is None or scored[0].recall < 1.0:
+                continue
+            if scored[0].precision == 1.0:
+                return Synthesis(fit=scored[0])
+            complete.append(scored[0])
 
     if not complete:
         misses.sort(key=lambda f: (-f.recall, -f.precision, len(f.selector)))

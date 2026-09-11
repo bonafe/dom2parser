@@ -1,13 +1,22 @@
 # 🗜️ DOM2parser
 
-Biblioteca Python que comprime páginas HTML grandes (centenas de KB a alguns MB)
-numa representação estrutural compacta — preservando hierarquia, cardinalidade de
-estruturas repetidas, assinaturas de conteúdo e exemplos representativos — para que
-um programa com LLM gere um parser (CSS/XPath/lxml) reutilizável, sem gastar
-milhares de tokens com HTML bruto.
+Biblioteca Python que lê uma página HTML grande (centenas de KB a alguns MB),
+encontra as estruturas repetidas que carregam os dados e **gera um parser
+verificado** para extraí-las — seletor de registro, locator e nome por campo —
+junto de uma representação estrutural compacta da página.
 
-O DOM2parser **não** chama nenhum LLM e não gera parsers — essa é a etapa
-seguinte, a cargo do programa consumidor. Este projeto é só a compressão.
+O DOM2parser **não chama nenhum LLM**. A síntese é determinística e, melhor,
+verificável: a biblioteca tem em mãos os elementos que quer alcançar, então
+escolher um seletor é uma busca medida — gera candidatos, roda contra o
+documento original, fica com o que comprovadamente alcança todos os registros.
+Um modelo, vendo só sete amostras e um path truncado, estaria chutando.
+
+Os nomes dos campos, a única parte genuinamente semântica, são lidos da própria
+página: numa fatura do Banco do Brasil saem `data`, `transacoes`, `moeda` e
+`valor` da linha de cabeçalho da tabela. Onde a página não diz nada (WhatsApp
+Web, onde toda classe é hash de Stylex), o nome cai para tipo e posição e um
+humano renomeia editando o spec. O campo `name_source` registra de onde veio
+cada nome, então dá para separar o que foi lido do que foi inferido.
 
 📖 Documentação completa: [arquitetura](https://bonafe.github.io/DOM2parser/architecture.html) ·
 [decisões de projeto](https://bonafe.github.io/DOM2parser/decisions.html) ·
@@ -43,37 +52,95 @@ print(result.text)
 # REPEATED STRUCTURES (ranked by relevance):
 #
 # tr > td > div.lancamentos > table > tbody > tr
-#   count: 122
-#   signature: DATE | TEXT | CURRENCY | MONEY
-#   examples:
-#     ['28/07', 'PGTO DEBITO CONTA...', 'R$', '-11.966,18']  # numeric-outlier
-#     ...
+#   selector: div.lancamentos tr  # matches 154, covers all 154
+#   fields:
+#     data: td:nth-of-type(1)        # DATE, present in 125/154
+#     transacoes: td:nth-of-type(2)  # TEXT, present in 141/154
+#     moeda: td:nth-of-type(3)       # CURRENCY, present in 128/154
+#     valor: td:nth-of-type(4)       # MONEY, present in 128/154
+#   skip header row: ['Data', 'Transações', 'Moeda', 'Valor']
+#   row types:
+#     [primary] count: 122
+#       signature: DATE | TEXT | CURRENCY | MONEY
+#       ...
 
 print(result.reduction["reduction_pct"])
-# {'chars': 96.8, 'tokens': 96.8}
+# {'chars': 97.3, 'tokens': 97.3}
 ```
 
-Um `*` dentro de um segmento do path (`div[data-testid="list-item-*"]`,
-`tr#tx-*`) marca a parte de um id/testid que varia por instância — um
-índice de lista virtualizada, um id de banco, um slug. Não é para ser usado
-literalmente num seletor: prefira `[data-testid^="list-item-"]` ou o
-próximo segmento estável.
+### Extraindo os registros
 
-`compress(html, *, max_clusters=10, min_cluster_size=2, max_samples_per_cluster=7)`
-retorna um `CompactRepresentation` com `.text` (representação em texto), `.json`
-(mesma informação estruturada) e `.reduction` (contagem de chars/tokens original
-vs. compacto). Referência completa da API em
+O parser gerado é **dado, não código** — executado por `lxml`, nunca por
+`exec()`. Ele roda contra o HTML **original**, nunca contra a forma compacta:
+
+```python
+from dom2parser.parser.executor import execute
+from dom2parser.parser.validate import validate
+
+record = result.parser.records[0]
+extraction = execute(result.parser, html)[record.name]
+
+print(validate(record, extraction).as_text())
+# registros encontrados: 152
+# com data: 123
+# com transacoes: 139
+# com moeda: 126
+# com valor: 126
+
+print(extraction.kept[3].values)
+# {'data': '28/07', 'transacoes': 'PGTO DEBITO CONTA...', 'moeda': 'R$', 'valor': '-11.966,18'}
+```
+
+Salve o parser com `result.parser.to_yaml()` e recarregue com
+`ParserSpec.from_yaml()` — é o ponto onde um humano renomeia um campo cujo nome
+saiu ruim.
+
+### Duas coisas que não se deve confundir
+
+`path_display` (`tr > td > div.lancamentos > ...`) **não é um seletor**: ele é
+truncado em seis níveis e um `*` dentro de um segmento
+(`div[data-testid="list-item-*"]`, `tr#tx-*`) marca a parte de um id/testid que
+varia por instância. Serve para localizar a estrutura lendo, e nada mais.
+Quem endereça é `record_selector.selector`, que foi medido contra o documento.
+
+`verified` também não é enfeite: um seletor que casa demais sem que haja regra
+explicando a sobra vai para `failures` com os quase-acertos, em vez de virar
+registro. Parser que funciona pela metade é indistinguível de parser que
+funciona.
+
+`compress(html, max_clusters=10, min_cluster_size=2, max_samples_per_cluster=7)`
+retorna um `CompactRepresentation` com `.text`, `.json` (schema 2), `.reduction`
+e `.parser` (o `ParserSpec` executável). Referência completa em
 [usage.html](https://bonafe.github.io/DOM2parser/usage.html#api).
 
 ## Como funciona
 
-Pipeline de 7 etapas — sanitização estrutural, dedup de subtree idêntico,
-fingerprint estrutural com fallback, content signature, clusterização
-tolerante, ranking de relevância e sampling representativo. Cada etapa nasceu
-de um comportamento real observado ao rodar contra HTML de produção (bancos,
-catálogos de dados abertos, notícias, WhatsApp Web) — não de especulação. Veja
-o detalhamento em [architecture.html](https://bonafe.github.io/DOM2parser/architecture.html)
-e o raciocínio por trás de cada decisão em
+Pipeline de 10 etapas. As sete primeiras encontram as estruturas repetidas —
+sanitização estrutural, dedup de subtree idêntico, fingerprint estrutural com
+fallback, content signature, clusterização tolerante, ranking de relevância e
+sampling representativo. As três últimas transformam isso num parser: ancoragem
+de volta ao documento original, síntese e verificação do seletor, e descoberta
+de campos.
+
+Duas correções nessa passagem valem menção, porque as duas foram forçadas por
+medição contra ground truth escrito à mão, não por raciocínio:
+
+- **Uma família é incompleta.** O agrupamento por conteúdo abandona linhas que
+  classificam de forma atípica: duas transações comuns que começavam com dígito
+  viraram `COUNT_LABELED`, viraram cluster singleton e caíram abaixo do
+  `min_cluster_size` — a família tinha 152 de 154 linhas. O fecho estrutural as
+  recupera.
+- **Uma família é profunda demais.** `content_signature` lê o texto dos filhos
+  diretos, então o ranking prefere o nível mais fundo em que os filhos ainda
+  diferem — um wrapper interno. A sobreposição entre os elementos da família e
+  os registros reais era **exatamente zero** em quatro das seis páginas. A
+  promoção sobe enquanto cada elemento tem pai próprio, parando onde os irmãos
+  convergem no contêiner.
+
+Cada etapa nasceu de comportamento real observado em HTML de produção (bancos,
+catálogos de dados abertos, notícias, WhatsApp Web). Detalhamento em
+[architecture.html](https://bonafe.github.io/DOM2parser/architecture.html) e o
+raciocínio por trás de cada decisão em
 [decisions.html](https://bonafe.github.io/DOM2parser/decisions.html).
 
 ## Desenvolvimento

@@ -107,10 +107,14 @@ print(result.reduction)   # {'reduction_pct': {'chars': 96.8, 'tokens': 96.8}, .
 "</code></pre>
 
 <div class="callout">
-  <strong>Escopo do projeto:</strong> o DOM2parser é <em>só</em> a etapa de compressão.
-  Ele não chama nenhum LLM e não gera parsers — isso fica a cargo do programa
-  consumidor, que recebe a representação compacta e decide como gerar e validar
-  o parser final contra o HTML original.
+  <strong>Escopo do projeto:</strong> o DOM2parser comprime a página <em>e</em> gera o
+  parser que extrai os registros dela — mas continua <strong>sem chamar nenhum
+  LLM</strong>. A síntese é determinística e verificada: cada seletor candidato é
+  rodado contra o documento original e só é aceito se alcançar todos os registros.
+  Os nomes dos campos são lidos da própria página (linha de cabeçalho,
+  <code>itemprop</code>, <code>aria-label</code>, classe), com queda para tipo e
+  posição quando a página não diz nada. Ver
+  <a href="decisions.html#adr-009">ADR-009</a>.
 </div>
 
 </main>

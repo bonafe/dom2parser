@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from lxml.cssselect import CSSSelector
 
 from ..html_io import parse_html
-from .fields import _relative, _value_of
+from .fields import _value_of, relative_locator
 from .naming import text_of
 
 
@@ -50,7 +50,7 @@ def _skip_reason(values: dict, skip_when: dict) -> str | None:
 
 def extract_records(record_entry, root) -> list[Record]:
     elements = CSSSelector(record_entry.selector)(root)
-    locators = {f.name: (_relative(f.locator), f.attribute) for f in record_entry.fields}
+    locators = {f.name: (relative_locator(f.locator), f.attribute) for f in record_entry.fields}
 
     out = []
     for index, element in enumerate(elements):

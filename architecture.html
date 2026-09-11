@@ -42,31 +42,49 @@
 
 <h2 id="escopo">Escopo e fronteira do projeto</h2>
 <p>
-  O DOM2parser é uma <strong>biblioteca de compressão</strong>, não um gerador de parsers.
-  Ele recebe HTML e devolve uma representação estrutural compacta (texto ou JSON).
-  Um programa externo — que tem seu próprio LLM — consome essa representação, gera o
-  parser (CSS/XPath/lxml/BeautifulSoup) e o valida contra o HTML <em>original</em>, nunca
-  contra a versão compactada.
+  O DOM2parser recebe HTML e devolve duas coisas: uma representação estrutural
+  compacta (texto ou JSON) e um <strong>parser verificado</strong> para extrair os
+  registros. Ele continua não chamando nenhum LLM — a síntese do parser é uma busca
+  determinística, e o parser que sai é <em>dado</em>, executado por <code>lxml</code>,
+  nunca código passado por <code>exec()</code>. Ele roda contra o HTML
+  <em>original</em>, nunca contra a versão compactada.
+</p>
+<p>
+  A razão de não precisar de modelo é que a biblioteca tem uma informação que um LLM
+  consumindo a forma compacta não tem: os elementos-alvo em si. Isso transforma a
+  escolha do seletor numa busca <em>medida</em> — gera candidatos, roda cada um contra
+  o documento, fica com o que comprovadamente alcança todos os registros. Um modelo,
+  vendo sete amostras e um path truncado, estaria chutando.
 </p>
 <div class="tree">HTML original
    │
-   ▼
-┌─────────────────────────────┐
-│         DOM2parser          │   ← este projeto
-│  (7 etapas, ver abaixo)     │
-└─────────────────────────────┘
+   ├─────────────────────────────────────────┐
+   ▼                                         │
+┌─────────────────────────────┐              │
+│  Fases 1-7: encontrar       │              │
+│  as estruturas repetidas    │              │
+└─────────────────────────────┘              │
+   │                                         │
+   ▼                                         │
+Representação compacta (texto/JSON schema 2) │
+   │                                         │
+   ▼                                         │
+┌─────────────────────────────┐              │
+│  Fases I-M: sintetizar      │              │
+│  e verificar o parser       │              │
+│  (ancoragem → seletor →     │◄─────────────┘
+│   campos → ParserSpec)      │   mede os candidatos
+└─────────────────────────────┘   contra o original
    │
    ▼
-Representação compacta (texto/JSON)
-   │
-   ▼
-┌─────────────────────────────┐
-│   Programa consumidor       │   ← fora do escopo
-│   (LLM → parser → validação)│
-└─────────────────────────────┘
-   │
-   ▼
-Parser executado no HTML ORIGINAL completo</div>
+ParserSpec (YAML/JSON) ── executor ──► registros extraídos
+                                        do HTML ORIGINAL</div>
+<p>
+  Um seletor que casa demais sem que haja regra explicando a sobra nunca vira
+  registro: vai para <code>failures</code> com os quase-acertos medidos. Parser que
+  funciona pela metade é indistinguível de parser que funciona, e é pior que parser
+  nenhum.
+</p>
 
 <h2 id="pipeline">O pipeline de 7 etapas</h2>
 

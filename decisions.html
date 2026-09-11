@@ -226,6 +226,77 @@
   por qualquer consumidor, independente de qual LLM ou estratégia de geração de parser
   ele use.
 </p>
+<h4>Atualização</h4>
+<p>
+  A geração de parser <em>entrou</em> na biblioteca — ver <a href="#adr-009">ADR-009</a>.
+  A decisão acima não foi revertida: o que a motivava era manter tudo determinístico e
+  testável sem custo de tokens, e é exatamente isso que a síntese determinística
+  preserva. A biblioteca continua sem chamar nenhum modelo.
+</p>
+</div>
+
+<div class="adr" id="adr-009">
+<h3>ADR-009 — Gerar o parser sem LLM, por síntese medida <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  A representação compacta descrevia uma estrutura repetida mas não conseguia
+  <em>endereçá-la</em>: dizia que a posição 1 continha um <code>DATE</code>, nunca que a
+  posição 1 era <code>td.tituloLancamento</code>. E o <code>path</code> não servia como
+  seletor — truncado em seis níveis, com máscaras <code>*</code> que por definição não
+  podem ir literais, e derivado da árvore <em>sanitizada</em>, enquanto a spec exige que
+  o parser rode no HTML original. Fechar esse buraco parecia exigir um LLM, o que
+  reabriria o ADR-008.
+</p>
+<h4>Decisão</h4>
+<p>
+  Sintetizar o parser deterministicamente. A observação que destrava isso é que a
+  biblioteca tem os elementos-alvo em mãos, então escolher um seletor é uma busca com
+  função objetivo exata — gera candidatos, roda cada um contra o documento original,
+  mede precisão e recall contra o conjunto conhecido. Um LLM, vendo sete amostras e um
+  path truncado, só poderia chutar; aqui dá para <em>verificar</em>. Para esse trabalho
+  específico o modelo é a ferramenta pior, não a melhor.
+</p>
+<p>
+  Os nomes dos campos, a única parte genuinamente semântica, são lidos da página numa
+  cascata: linha de cabeçalho, <code>th</code>, <code>itemprop</code>,
+  <code>aria-label</code>, classe semântica do campo e, em último caso, tipo e posição
+  (<code>date_1</code>, <code>money_4</code>). Numa fatura do Banco do Brasil isso produz
+  <code>data</code>, <code>transacoes</code>, <code>moeda</code> e <code>valor</code> — os
+  mesmos nomes que a spec original pedia, lidos da tabela. O campo
+  <code>name_source</code> registra a procedência, separando o que foi lido do que foi
+  inferido.
+</p>
+<p>
+  O parser gerado é <strong>dado, não código</strong>: um <code>ParserSpec</code>
+  serializável executado por <code>lxml</code>. Nada da página vira algo que a biblioteca
+  execute, a validação é campo a campo, e um nome ruim se conserta editando um YAML em
+  vez de regenerar um arquivo.
+</p>
+<h4>Consequências</h4>
+<p>
+  Critério de aceitação assimétrico: <strong>recall 1.0 é obrigatório</strong> — um
+  registro que o seletor não alcança é um registro que o parser nunca devolve, em
+  silêncio. Precisão abaixo de 1.0 só é aceita quando as sobras são explicadas por
+  regras de descarte gravadas no spec (a linha de cabeçalho); sem isso a estrutura vai
+  para <code>failures</code> com os quase-acertos medidos, e nunca vira registro.
+</p>
+<p>
+  Duas correções vieram de medir contra o ground truth escrito à mão, não de raciocínio.
+  Uma família é <em>incompleta</em>: duas transações comuns começando com dígito viraram
+  <code>COUNT_LABELED</code>, viraram cluster singleton e caíram abaixo do
+  <code>min_cluster_size</code>, deixando a família com 152 de 154 linhas — o fecho
+  estrutural as recupera. E é <em>profunda demais</em>: como <code>content_signature</code>
+  lê o texto dos filhos diretos, o ranking prefere o nível mais fundo onde os filhos ainda
+  diferem, que é um wrapper interno. A sobreposição entre os elementos da família e os
+  registros reais era <strong>exatamente zero</strong> em quatro das seis páginas.
+</p>
+<p>
+  Limitação conhecida: no WhatsApp Web cada linha de conversa são dois
+  <code>div</code> irmãos sem identidade própria, então a promoção não consegue subir
+  (os pais não são injetivos) e o fecho dá 44 onde o ground truth é 23. O relatório de
+  quase-acerto nomeia <code>div[data-testid="cell-frame-container"]</code>
+  explicitamente, então a lacuna fica visível em vez de silenciosa.
+</p>
 </div>
 
 <hr>

@@ -64,14 +64,27 @@ print(result.text)
 # REPEATED STRUCTURES (ranked by relevance):
 #
 # tr > td > div.lancamentos > table > tbody > tr
-#   count: 122
-#   signature: DATE | TEXT | CURRENCY | MONEY
-#   examples:
-#     ['28/07', 'PGTO DEBITO CONTA...', 'R$', '-11.966,18']  # numeric-outlier
+#   selector: div.lancamentos tr  # matches 154, covers all 154
+#   fields:
+#     data: td:nth-of-type(1)        # DATE, present in 125/154
+#     transacoes: td:nth-of-type(2)  # TEXT, present in 141/154
+#     moeda: td:nth-of-type(3)       # CURRENCY, present in 128/154
+#     valor: td:nth-of-type(4)       # MONEY, present in 128/154
+#   skip header row: ['Data', 'Transações', 'Moeda', 'Valor']
+#   row types:
+#     [primary] count: 122
+#       signature: DATE | TEXT | CURRENCY | MONEY
+#       examples:
+#         ['28/07', 'PGTO DEBITO CONTA...', 'R$', '-11.966,18']  # numeric-outlier
 #     ...
 
 print(result.reduction["reduction_pct"])
-# {'chars': 96.8, 'tokens': 96.8}</code></pre>
+# {'chars': 97.3, 'tokens': 97.3}</code></pre>
+<p>
+  Os nomes <code>data</code>, <code>transacoes</code>, <code>moeda</code> e
+  <code>valor</code> não foram inventados nem pedidos a um modelo: foram lidos da
+  linha de cabeçalho da própria fatura.
+</p>
 
 <h2 id="api">Referência da API</h2>
 
@@ -91,26 +104,99 @@ print(result.reduction["reduction_pct"])
   <thead><tr><th>Campo</th><th>Tipo</th><th>Descrição</th></tr></thead>
   <tbody>
     <tr><td><code>.text</code></td><td><code>str</code></td><td>Representação em texto estruturado.</td></tr>
-    <tr><td><code>.json</code></td><td><code>list[dict]</code></td><td>Mesma informação em JSON, um dict por cluster.</td></tr>
+    <tr><td><code>.json</code></td><td><code>dict</code></td><td>Mesma informação em JSON (schema 2).</td></tr>
     <tr><td><code>.reduction</code></td><td><code>dict</code></td><td>Contagem de chars/tokens original vs. compacto e % de redução.</td></tr>
+    <tr><td><code>.parser</code></td><td><code>ParserSpec</code></td><td>O parser verificado, pronto para executar contra o HTML original.</td></tr>
   </tbody>
 </table>
 
-<h3>Formato de cada cluster no JSON</h3>
+<h3>Formato JSON (schema 2)</h3>
+<p>
+  Uma forma só para toda estrutura. O schema 1 tinha duas, mutuamente exclusivas
+  (plana quando a família tinha um membro e nenhum contêiner, aninhada caso
+  contrário), distinguidas apenas por quais chaves estavam presentes, e
+  <code>examples[].value</code> era <code>str</code> ou <code>list[str]</code>
+  conforme o tamanho da assinatura. Quem consumia precisava ramificar nas duas.
+  Agora <code>container</code> está sempre presente e pode ser nulo,
+  <code>members</code> é sempre lista, e <code>values</code> é sempre um objeto.
+</p>
 <pre><code>{
-  "path": "tr > td > div.lancamentos > table > tbody > tr",
-  "count": 122,
-  "signature": ["DATE", "TEXT", "CURRENCY", "MONEY"],
-  "examples": [
-    {"value": ["28/07", "PGTO DEBITO...", "R$", "-11.966,18"],
-     "reasons": ["representative-position", "numeric-outlier"]}
-  ],
-  "optional_fields": {
-    "img[class=seloBronze]": {"present": 6, "total": 10}
-  },
-  "rank_score": 15.04
+  "schema_version": 2,
+  "structures": [{
+    "path_display": "tr &gt; td &gt; div.lancamentos &gt; table &gt; tbody &gt; tr",
+    "record_selector": {
+      "selector": "div.lancamentos tr",
+      "verified": {"matched": 154, "expected": 154, "precision": 1.0, "recall": 1.0}
+    },
+    "container": {"path_display": "... &gt; div.lancamentos", "count": 2},
+    "fields": [
+      {"name": "data", "locator": "td:nth-of-type(1)", "type": "DATE",
+       "capture": "text", "attribute": null, "required": false,
+       "present": 125, "total": 154, "name_source": "header_row"}
+    ],
+    "members": [{
+      "role": "primary", "count": 122,
+      "signature": ["DATE", "TEXT", "CURRENCY", "MONEY"],
+      "examples": [{"values": {"data": "28/07", "transacoes": "PGTO DEBITO...",
+                               "moeda": "R$", "valor": "-11.966,18"},
+                    "reasons": ["representative-position", "numeric-outlier"]}],
+      "optional_fields": {"img[class=seloBronze]": {"present": 6, "total": 10}},
+      "rank_score": 15.04
+    }]
+  }],
+  "failures": []
 }</code></pre>
-<p>Um <code>*</code> dentro de um segmento do <code>path</code> (<code>div[data-testid="list-item-*"]</code>, <code>tr#tx-*</code>) marca a parte de um id/testid que varia por instância — índice de lista virtualizada, id de banco, slug. Não deve entrar literalmente num seletor: use <code>[data-testid^="list-item-"]</code> ou o próximo segmento estável.</p>
+
+<p class="callout warn">
+  <strong><code>path_display</code> não é um seletor.</strong> Ele é truncado em seis
+  níveis sem sinalizar truncamento, e um <code>*</code> dentro de um segmento
+  (<code>div[data-testid="list-item-*"]</code>, <code>tr#tx-*</code>) marca a parte de
+  um id/testid que varia por instância — índice de lista virtualizada, id de banco,
+  slug. Serve para um humano localizar a estrutura lendo. Quem endereça é
+  <code>record_selector.selector</code>, que foi medido contra o documento original.
+</p>
+
+<p>
+  Quando <code>fields</code> está vazio (a estrutura não teve campos descobertos),
+  <code>values</code> carrega o texto do elemento sob a chave <code>_text</code> — o
+  tipo nunca muda. E <code>failures</code> lista as estruturas cujo seletor casava
+  demais sem regra explicando a sobra, com os quase-acertos medidos; elas nunca viram
+  registro.
+</p>
+
+<h3>Executando o parser</h3>
+<p>
+  O <code>ParserSpec</code> é <strong>dado, não código</strong> — executado por
+  <code>lxml</code>, nunca por <code>exec()</code>. Ele roda contra o HTML
+  <em>original</em>, nunca contra a forma compacta:
+</p>
+<pre><code>from dom2parser.parser.executor import execute
+from dom2parser.parser.validate import validate
+
+record = result.parser.records[0]
+extraction = execute(result.parser, html)[record.name]
+
+print(validate(record, extraction).as_text())
+# registros encontrados: 152
+# com data: 123
+# com transacoes: 139
+# com moeda: 126
+# com valor: 126
+
+print(extraction.kept[3].values)
+# {'data': '28/07', 'transacoes': 'PGTO DEBITO CONTA...', 'moeda': 'R$', 'valor': '-11.966,18'}</code></pre>
+<p>
+  <code>extraction.records</code> traz tudo que o seletor casou;
+  <code>extraction.kept</code> tira o que foi descartado por regra (a linha de
+  cabeçalho). Nada é removido em silêncio — cada registro carrega
+  <code>skipped</code> e <code>skip_reason</code>, porque quem recebe 153 de 154 linhas
+  não tem como distinguir um descarte deliberado de um locator quebrado.
+</p>
+<p>
+  <code>result.parser.to_yaml()</code> serializa e <code>ParserSpec.from_yaml()</code>
+  recarrega — é o ponto onde um humano renomeia um campo cujo nome saiu ruim
+  (<code>name_source: type_position</code> indica exatamente esses).
+</p>
 
 <h2 id="cli">CLI de teste/demo</h2>
 <p>

@@ -61,7 +61,7 @@ class FieldSpec:
         return self.present == self.total
 
 
-def _relative(css: str) -> XPath:
+def relative_locator(css: str) -> XPath:
     return XPath(_TRANSLATOR.css_to_xpath(css, prefix="descendant::"))
 
 
@@ -162,7 +162,7 @@ def _resolve(locator: str, records: list) -> list | None:
     """The element each record yields for this locator, or None if any
     record resolves it ambiguously. `None` entries mark absence, which is
     allowed -- that is what makes a field optional rather than invalid."""
-    xpath = _relative(locator)
+    xpath = relative_locator(locator)
     resolved = []
     for record in records:
         try:
@@ -269,4 +269,4 @@ def discover(records: list) -> list[FieldSpec]:
     ]
 
 
-__all__ = ["FieldSpec", "discover"]
+__all__ = ["FieldSpec", "discover", "relative_locator"]

@@ -51,16 +51,35 @@ def _member_body_lines(member, indent: str) -> list[str]:
     return lines
 
 
-def render_family(family) -> str:
+def _record_lines(record) -> list[str]:
+    """The verified selector and the named fields, shown above the
+    structure they belong to. The `path` line below them is descriptive
+    only -- it is truncated and `*`-masked, and is not a selector."""
+    if record is None:
+        return []
+    lines = [
+        f"  selector: {record.selector}"
+        f"  # matches {record.verified['matched']}, covers all {record.verified['expected']}"
+    ]
+    if record.fields:
+        lines.append("  fields:")
+        for entry in record.fields:
+            source = "" if entry.name_source == "header_row" else f" ({entry.name_source})"
+            capture = f" @{entry.attribute}" if entry.attribute else ""
+            presence = "" if entry.required else f", present in {entry.present}/{entry.total}"
+            lines.append(
+                f"    {entry.name}: {entry.locator}{capture}"
+                f"  # {entry.type}{presence}{source}"
+            )
+    if record.skip_when.get("header_values"):
+        lines.append(f"  skip header row: {record.skip_when['header_values']}")
+    return lines
+
+
+def render_family(family, record=None) -> str:
     path = describe_path(family.primary.cluster.elements[0]) if family.primary.cluster.elements else "?"
-
-    if len(family.members) == 1 and family.container_path is None:
-        member = family.members[0]
-        lines = [path, f"  count: {member.cluster.count}"]
-        lines.extend(_member_body_lines(member, "  "))
-        return "\n".join(lines)
-
     lines = [path]
+    lines.extend(_record_lines(record))
     if family.container_path is not None:
         lines.append(f"  container: {family.container_path} (count: {family.container_count})")
     lines.append("  row types:")
@@ -70,9 +89,20 @@ def render_family(family) -> str:
     return "\n".join(lines)
 
 
-def render(families: list) -> str:
+def render(families: list, by_family: dict | None = None, failures: list | None = None) -> str:
+    by_family = by_family or {}
     blocks = ["REPEATED STRUCTURES (ranked by relevance):", ""]
-    for family in families:
-        blocks.append(render_family(family))
+    for position, family in enumerate(families):
+        blocks.append(render_family(family, by_family.get(position)))
+        blocks.append("")
+    if failures:
+        blocks.append(f"NO EXACT SELECTOR ({len(failures)} structures):")
+        for failure in failures:
+            closest = failure["near_misses"][0] if failure["near_misses"] else None
+            if closest:
+                blocks.append(
+                    f"  {closest['selector']}  # matched {closest['matched']} for "
+                    f"{closest['expected']} records (precision {closest['precision']})"
+                )
         blocks.append("")
     return "\n".join(blocks).rstrip() + "\n"

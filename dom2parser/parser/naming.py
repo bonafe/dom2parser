@@ -145,7 +145,7 @@ _TAG_NAMES = {
 
 def _own_name(el, constant) -> tuple[str, str] | None:
     """A name off one element, taking only evidence `constant` accepts."""
-    for attr, source in (("itemprop", "itemprop"), ("aria-label", "aria_label")):
+    for attr, source in (("itemprop", "itemprop"), ("data-testid", "testid"), ("aria-label", "aria_label")):
         value = el.get(attr)
         if value and value.strip() and constant(attr):
             return slugify(value), source

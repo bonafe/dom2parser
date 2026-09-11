@@ -291,11 +291,12 @@
   registros reais era <strong>exatamente zero</strong> em quatro das seis páginas.
 </p>
 <p>
-  Limitação conhecida: no WhatsApp Web cada linha de conversa são dois
-  <code>div</code> irmãos sem identidade própria, então a promoção não consegue subir
-  (os pais não são injetivos) e o fecho dá 44 onde o ground truth é 23. O relatório de
-  quase-acerto nomeia <code>div[data-testid="cell-frame-container"]</code>
-  explicitamente, então a lacuna fica visível em vez de silenciosa.
+  Limitação que existiu até o <a href="#adr-012">ADR-012</a>: no WhatsApp Web cada
+  linha de conversa são dois <code>div</code> irmãos sem identidade própria, e a
+  promoção parava neles (os pais não eram injetivos), dando 44 onde o ground truth é
+  23. Enquanto durou, o relatório de quase-acerto nomeava
+  <code>div[data-testid="cell-frame-container"]</code> explicitamente — visível, não
+  silenciosa.
 </p>
 </div>
 
@@ -341,9 +342,53 @@
   rotulados; filho de um único símbolo (<code>¶</code>) é decoração e nunca registro.
 </p>
 <p>
-  Limitação que permanece: o fan-out <em>para baixo</em> do WhatsApp (dois
-  <code>div</code> irmãos sem identidade por linha, sob um pai identificado) é o inverso
-  deste mecanismo e continua declarado como falha.
+  O fan-out <em>para baixo</em> do WhatsApp (dois <code>div</code> irmãos sem identidade
+  por linha, sob um pai identificado) é o inverso deste mecanismo; ficou declarado como
+  falha até o <a href="#adr-012">ADR-012</a>.
+</p>
+</div>
+
+<div class="adr" id="adr-012">
+<h3>ADR-012 — Fan-out para baixo: subir um pai compartilhado quando o registro está dividido em poucas partes <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  A regra de promoção era "sobe enquanto cada elemento tem pai próprio": pai
+  compartilhado significa que se chegou ao contêiner da coleção, e o nível de baixo é o
+  registro. O mesmo sinal, porém, marca a situação oposta — a família aterrissou nas
+  <em>partes</em> de um registro. Cada linha de conversa do WhatsApp é um
+  <code>div[data-testid="cell-frame-container"]</code> com dois <code>div</code> filhos
+  sem identidade (ícone e texto); a família caía nos 46 filhos e a subida não começava,
+  parando exatamente um nível abaixo do registro.
+</p>
+<h4>Decisão</h4>
+<p>
+  O que separa as duas situações é o <strong>tamanho do fan-out</strong>: 46 filhos
+  colapsam em 23 pais de dois em dois; as 154 linhas de uma fatura colapsam em 2
+  <code>tbody</code> de 77 em 77. Um registro se divide num punhado de partes, nunca em
+  dezenas. Pai compartilhado passa a ser subido quando nenhum pai concentra mais de
+  <code>MAX_PARTS</code> (4) dos elementos atuais <em>e</em> os pais ainda formam uma
+  coleção (<code>MIN_FANOUT_PARENTS</code>, 3) — dois pais são um par de tabelas
+  pequenas, não uma coleção, e uma página com duas tabelas de três linhas precisa
+  continuar devolvendo linhas. O limite 4 é o mesmo <code>MAX_SPAN</code> do fan-out
+  lateral, visto do outro lado.
+</p>
+<p>
+  Junto entrou uma correção no fecho: <code>data-testid</code> é marcador de tipo de
+  componente e vale o mesmo onde quer que o componente esteja montado, então
+  localização não o divide. O WhatsApp renderiza 22 linhas dentro da lista virtualizada e
+  a de "conversas trancadas" fora dela; todas as 23 são
+  <code>cell-frame-container</code>, e o seletor que um humano escreve diz exatamente
+  isso. Identidade por classe continua exigindo localização igual
+  (<code>div.limites &gt; div.textoItem</code> e <code>div.totalFatura &gt; div.textoItem</code>
+  são lugares diferentes).
+</p>
+<h4>Consequências</h4>
+<p>
+  As sete fixtures reais e as onze páginas do corpus passam a ter seletor de registro
+  exato contra o ground truth escrito à mão — nenhuma limitação declarada resta. Os testes
+  de promoção passaram a re-fechar cada nível antes de comparar, que é o que o
+  <code>build</code> sempre fez: subir pode aterrissar num nível que a semente não cobria
+  inteiro.
 </p>
 </div>
 

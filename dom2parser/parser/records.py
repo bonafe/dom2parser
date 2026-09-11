@@ -38,12 +38,18 @@ from collections import Counter
 
 from lxml import etree
 
+from ..anchor import UID_ATTR, originals_for
 from ..compact.paths import location_key
 from ..fingerprint.hashattrs import semantic_class_tokens
 from ..fingerprint.structural import compute_fingerprint, fingerprint_key
 
 MAX_PROMOTION_LEVELS = 6
+# A record spreads over at most this many siblings (span) and is divided
+# into at most this many parts (downward fan-out) -- the same bound seen
+# from both sides.
 MAX_SPAN = 4
+MAX_PARTS = 4
+MIN_FANOUT_PARENTS = 3
 
 
 def structural_identity(el, cache: dict | None = None, reused_ids: frozenset[str] = frozenset()) -> tuple:
@@ -88,10 +94,21 @@ def closure_of(members: list, clean_root, cache: dict | None = None, reused_ids:
         for structural, location in wanted
         if structural[1] == ("shape",)
     }
+    # A data-testid is a component-type marker and means the same thing
+    # wherever the component is mounted, so location does not split it.
+    # WhatsApp renders 22 chat rows inside a virtualized list and the
+    # "locked chats" row outside it; all 23 are
+    # `div[data-testid="cell-frame-container"]`, and the selector a human
+    # writes says exactly that.
+    by_testid = {structural for structural, _ in wanted if structural[1][0] == "testid"}
     out = []
     for el in clean_root.iter(etree.Element):
         identity = structural_identity(el, cache, reused_ids)
-        if identity in wanted or (identity[0][0], identity[1]) in by_place:
+        if (
+            identity in wanted
+            or identity[0] in by_testid
+            or (identity[0][0], identity[1]) in by_place
+        ):
             out.append(el)
     return out
 
@@ -99,19 +116,70 @@ def closure_of(members: list, clean_root, cache: dict | None = None, reused_ids:
 def promote(elements: list) -> list[list]:
     """Successive record-boundary candidates, innermost first.
 
-    Climbing stops as soon as two elements share a parent: that parent
-    holds the collection, so the level below it is the record."""
+    Climbing normally stops as soon as two elements share a parent: that
+    parent holds the collection, so the level below it is the record.
+
+    The same signal also marks the opposite situation -- the family sits
+    on the PARTS of a record. Every WhatsApp chat row is one
+    `div[data-testid="cell-frame-container"]` holding two identity-less
+    `div`s (icon, text); the family lands on the 46 inner divs, and a rule
+    that stops at the first shared parent stops exactly one level below
+    the record it should reach. What tells the two apart is the size of
+    the fan-out: 46 divs collapse into 23 parents two at a time, while the
+    154 rows of a statement collapse into 2 `tbody` 77 at a time. A record
+    is divided into a handful of parts, never into dozens, so a shared
+    parent is climbed to when no parent holds more than `MAX_PARTS` of the
+    current elements and the parents are still a collection of their own
+    (`MIN_FANOUT_PARENTS`). Two parents are a pair of small tables, not a
+    collection: a page with two three-row tables must keep its rows."""
     levels = [elements]
     current = elements
     for _ in range(MAX_PROMOTION_LEVELS):
-        parents = [el.getparent() for el in current]
-        if any(parent is None for parent in parents):
+        current = _climb(current)
+        if current is None:
             break
-        if len({id(parent) for parent in parents}) != len(current):
-            break
-        current = parents
         levels.append(current)
     return levels
+
+
+def _climb(current: list) -> list | None:
+    """One promotion step: the parents of `current`, or None where the
+    climb must stop (see `promote`)."""
+    parents = [el.getparent() for el in current]
+    if any(parent is None for parent in parents):
+        return None
+    distinct: dict[int, list] = {}
+    for parent in parents:
+        slot = distinct.setdefault(id(parent), [parent, 0])
+        slot[1] += 1
+    if len(distinct) == len(current):
+        return parents
+    parts = max(n for _, n in distinct.values())
+    if parts > MAX_PARTS or len(distinct) < MIN_FANOUT_PARENTS:
+        return None
+    return [parent for parent, _ in distinct.values()]
+
+
+def completed_levels(seed: list, clean_root, index: dict, clean_index: dict, cache: dict | None = None, reused_ids: frozenset[str] = frozenset()):
+    """Promotion levels for original-tree `seed` elements, each re-closed
+    before the next is climbed FROM IT.
+
+    Re-closing a level can add records the seed never covered, and those
+    additions have parents of their own. WhatsApp: the family's 44 inner
+    divs climb to 22 chat rows; re-closure adds the "locked chats" row,
+    making 23; only by climbing from those 23 does the next level see
+    that the 23rd row's parent is not a `list-item-*` wrapper, which is
+    what stops the wrapper level from being mistaken for an exact,
+    outermost record boundary. Re-closing each raw level independently
+    yielded a 22-row wrapper record instead."""
+    level = seed
+    for _ in range(MAX_PROMOTION_LEVELS + 1):
+        in_clean = [clean_index[uid] for el in level if (uid := el.get(UID_ATTR)) in clean_index]
+        completed = originals_for(closure_of(in_clean, clean_root, cache, reused_ids), index) or level
+        yield completed
+        level = _climb(completed)
+        if level is None:
+            return
 
 
 def _identity_signals(el) -> int:
@@ -222,6 +290,7 @@ __all__ = [
     "anchor_offsets",
     "closure",
     "closure_of",
+    "completed_levels",
     "period",
     "promote",
     "shift_anchors",

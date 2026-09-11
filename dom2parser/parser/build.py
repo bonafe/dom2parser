@@ -29,7 +29,7 @@ from ..html_io import parse_html
 from ..sanitize import full_sanitize
 from .fields import capture_value, discover, is_decoration, relative_locator, scoped_element
 from .naming import slugify
-from .records import anchor_offsets, closure, closure_of, period, promote, shift_anchors
+from .records import anchor_offsets, closure, closure_of, completed_levels, period, shift_anchors
 from .selector import synthesize
 from .spec import SCHEMA_VERSION, FieldEntry, ParserSpec, RecordEntry
 
@@ -66,9 +66,9 @@ def _best_level(family, clean, root, index, clean_index, cache, document_ids, mi
         return None, None, (), 1
 
     exact, inexact = [], []
-    for level in promote(originals_for(seed, index)):
-        in_clean = [clean_index[uid] for el in level if (uid := el.get(UID_ATTR)) in clean_index]
-        completed = originals_for(closure_of(in_clean, clean, cache, document_ids), index) or level
+    for completed in completed_levels(
+        originals_for(seed, index), clean, index, clean_index, cache, document_ids
+    ):
         result = synthesize(completed, root, minted)
         if not result.ok:
             inexact.extend(result.near_misses)

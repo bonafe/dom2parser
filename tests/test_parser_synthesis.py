@@ -18,10 +18,10 @@ from dom2parser.anchor import UID_ATTR, build_index, originals_for, stamp_uids
 from dom2parser.cluster.families import build_families
 from dom2parser.cluster.rank import rank_clusters, select_top_level_clusters
 from dom2parser.cluster.siblings import cluster_siblings
-from dom2parser.fingerprint.structural import filter_meaningful_candidates, generated_ids, reused_ids
+from dom2parser.fingerprint.structural import filter_meaningful_candidates, reused_ids
 from dom2parser.html_io import load_html_file, parse_html
 from dom2parser.parser.build import build_spec
-from dom2parser.parser.records import closure, promote
+from dom2parser.parser.records import closure, completed_levels, promote
 from dom2parser.parser.selector import synthesize
 from dom2parser.sanitize import full_sanitize
 
@@ -38,14 +38,10 @@ RECORD_GROUND_TRUTH = {
     "conjuntodadosgovbr.html": "div.search-result.container",
     "dadosabertrosfiocruz.html": "div.views-row",
     "folhadesp.html": "li.c-headline--newslist",
+    # Each chat row is two identity-less divs inside the record; reaching
+    # the record means climbing a shared parent (records.promote).
+    "oss_gov_br_whatsapp.html": 'div[data-testid="cell-frame-container"]',
 }
-
-# oss_gov_br_whatsapp.html's chat rows are two identity-less sibling divs
-# per row, so promotion cannot climb (parents are not injective) and the
-# closure is 44 where the ground truth is 23. The near-miss report names
-# `div[data-testid="cell-frame-container"]` explicitly, so the gap is
-# visible rather than silent.
-_KNOWN_FANOUT_LIMITATION = {"oss_gov_br_whatsapp.html"}
 
 
 def _pipeline(path):
@@ -64,6 +60,14 @@ def _uids(elements):
     return {el.get(UID_ATTR) for el in elements}
 
 
+def _record_levels(family, clean, index, document_ids, cache):
+    """Every promotion level, each re-closed the way `parser.build` does
+    before synthesizing -- climbing can land on a level the seed did not
+    fully cover, and the boundary is only judged once completed."""
+    seed = originals_for(closure(family, clean, cache, document_ids), index)
+    yield from completed_levels(seed, clean, index, build_index(clean), cache, document_ids)
+
+
 @pytest.mark.parametrize("filename, selector", sorted(RECORD_GROUND_TRUTH.items()))
 def test_some_family_reaches_the_ground_truth_record_set_exactly(filename, selector):
     root, clean, index, families, document_ids = _pipeline(EXAMPLES_DIR / filename)
@@ -72,8 +76,7 @@ def test_some_family_reaches_the_ground_truth_record_set_exactly(filename, selec
 
     reached = []
     for family in families:
-        elements = originals_for(closure(family, clean, cache, document_ids), index)
-        for level in promote(elements):
+        for level in _record_levels(family, clean, index, document_ids, cache):
             if _uids(level) == expected:
                 reached.append(level)
 
@@ -90,7 +93,7 @@ def test_synthesized_selector_for_the_ground_truth_records_is_exact(filename, se
     cache = {}
 
     for family in families:
-        for level in promote(originals_for(closure(family, clean, cache, document_ids), index)):
+        for level in _record_levels(family, clean, index, document_ids, cache):
             if _uids(level) != expected:
                 continue
             result = synthesize(level, root)
@@ -121,22 +124,38 @@ def test_every_emitted_record_selector_is_exact(filename):
         )
 
 
-def test_whatsapp_chat_rows_remain_a_declared_failure():
-    """Documented limitation, asserted so it stays visible: the chat row is
-    two identity-less sibling divs, so the record boundary cannot be
-    climbed to and the closure is double the real row count."""
-    filename = next(iter(_KNOWN_FANOUT_LIMITATION))
-    root, clean, index, families, document_ids = _pipeline(EXAMPLES_DIR / filename)
-    expected = _uids(CSSSelector('div[data-testid="cell-frame-container"]')(root))
-    cache = {}
-    reached = any(
-        _uids(level) == expected
-        for family in families
-        for level in promote(originals_for(closure(family, clean, cache, document_ids), index))
+def test_promotion_climbs_a_record_divided_into_a_few_parts():
+    """Downward fan-out: five records, each two anonymous divs. The family
+    lands on the ten divs; the record is their parent."""
+    root = stamp_uids(
+        parse_html(
+            "<ul>" + "".join(
+                f"<li data-testid='row'><div><span>icon{i}</span></div><div><span>text{i}</span></div></li>"
+                for i in range(5)
+            ) + "</ul>"
+        )
     )
-    assert not reached, (
-        "whatsapp chat rows now reach the ground-truth set -- the fan-out limitation is "
-        "fixed and this test plus the note in test_parser_synthesis should be removed"
+    inner = [d for d in root.iter("div")]
+    tags = [(level[0].tag, len(level)) for level in promote(inner)]
+    assert ("li", 5) in tags, f"expected to climb from 10 divs to their 5 <li>, got {tags}"
+
+
+def test_promotion_does_not_swallow_small_tables_into_their_tbody():
+    """Two three-row tables: rows share a parent three at a time, which is
+    within MAX_PARTS -- but two parents are a pair of containers, not a
+    collection of records."""
+    root = stamp_uids(
+        parse_html(
+            "<div>" + "".join(
+                "<table class='t'><tbody>" + "".join(f"<tr><td>{t}{r}</td></tr>" for r in range(3)) + "</tbody></table>"
+                for t in range(2)
+            ) + "</div>"
+        )
+    )
+    rows = list(root.iter("tr"))
+    levels = promote(rows)
+    assert [level[0].tag for level in levels] == ["tr"], (
+        f"six rows in two tables must stay rows, got {[(l[0].tag, len(l)) for l in levels]}"
     )
 
 

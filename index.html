@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>DOM2parser — comprima HTML gigante para LLMs</title>
-<meta name="description" content="Biblioteca Python que comprime páginas HTML grandes numa representação estrutural compacta, para geração de parsers via LLM.">
+<title>DOM2parser — parser verificado a partir de HTML gigante</title>
+<meta name="description" content="Biblioteca Python que lê uma página HTML grande, encontra as estruturas repetidas e gera um parser verificado para extraí-las — sem chamar nenhum LLM.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗜️</text></svg>">
 <link rel="stylesheet" href="assets/style.css">
 </head>
@@ -30,13 +30,14 @@
     <span class="pill">MIT License</span>
     <span class="pill">Sem dependência de LLM</span>
   </div>
-  <h1>Comprima HTML gigante numa representação<br>que um LLM consegue realmente usar</h1>
+  <h1>De HTML gigante a parser verificado<br>sem chamar nenhum LLM</h1>
   <p class="lede">
-    O DOM2parser recebe uma página HTML de centenas de KB a alguns MB e produz uma
-    representação estrutural compacta — preservando hierarquia, cardinalidade de
-    estruturas repetidas, assinaturas de conteúdo e exemplos representativos —
-    para que um programa com LLM gere um parser (CSS/XPath/lxml) reutilizável,
-    sem gastar milhares de tokens com HTML bruto.
+    O DOM2parser recebe uma página HTML de centenas de KB a alguns MB, encontra as
+    estruturas repetidas que carregam os dados e <strong>sintetiza um parser
+    verificado</strong> para extraí-las — seletor de registro, locator e nome por
+    campo — junto de uma representação estrutural compacta da página. A síntese é
+    uma busca determinística medida contra o documento original, não um palpite de
+    modelo.
   </p>
   <div class="btn-row">
     <a class="btn btn-primary" href="usage.html">Começar agora</a>
@@ -50,61 +51,73 @@
 <p>
   Páginas reais carregam centenas de KB (às vezes mais de 1&nbsp;MB) de scripts, CSS,
   SVGs, menus de navegação, widgets de filtro e wrappers de layout — e apenas uma
-  fração mínima disso é a estrutura de dados que você realmente quer extrair. Enviar
-  o HTML inteiro para um LLM gerar um parser é caro e, pior, a repetição de centenas
-  de registros idênticos não ajuda o modelo a entender a estrutura — só consome tokens.
+  fração mínima disso é a estrutura de dados que você realmente quer extrair. E mesmo
+  quando se isola essa estrutura, sobra uma pergunta que pedir a um modelo não resolve
+  bem: <em>qual seletor exato alcança todos os registros e nenhum a mais?</em> — sete
+  amostras e um path truncado não dão a um LLM como verificar a própria resposta.
 </p>
 <p>
-  O DOM2parser resolve isso com uma pergunta simples: <strong>o que o LLM realmente
-  precisa ver para gerar um seletor correto?</strong> A resposta não é "o HTML inteiro",
-  nem "um resumo genérico de texto" — é uma via <em>destilação estrutural</em>: onde a
-  estrutura relevante está, quantas vezes ela se repete, qual o formato de cada campo, e
-  alguns exemplos + outliers reais.
+  O DOM2parser resolve as duas coisas com o mesmo pipeline: primeiro destila a
+  estrutura — onde ela está, quantas vezes se repete, o formato de cada campo, exemplos
+  e outliers reais — depois <strong>sintetiza e verifica o seletor</strong> contra o
+  documento original, porque a biblioteca tem os elementos-alvo em mãos e pode medir,
+  em vez de chutar. Os nomes de campo, a única parte genuinamente semântica, são lidos
+  da própria página.
 </p>
 
 <h2>Resultados reais</h2>
-<p>Medido nas 6 páginas reais usadas como corpus de teste do projeto (bancos, catálogos de dados abertos, notícias, WhatsApp Web):</p>
+<p>Medido em 7 páginas reais (bancos, catálogos de dados abertos, notícias, WhatsApp Web) e em 11 páginas públicas escolhidas uma por modo de falha:</p>
 
 <table>
   <thead>
     <tr><th>Página</th><th class="num">Original</th><th class="num">Compacto</th><th class="num">Redução</th></tr>
   </thead>
   <tbody>
-    <tr><td>Banco do Brasil (fatura de cartão)</td><td class="num">237.764 chars</td><td class="num">7.549 chars</td><td class="num badge-good">96,8%</td></tr>
-    <tr><td>gov.br — acervo de dados técnicos</td><td class="num">107.274 chars</td><td class="num">11.215 chars</td><td class="num badge-good">89,5%</td></tr>
-    <tr><td>gov.br — conjuntos de dados (CKAN)</td><td class="num">421.532 chars</td><td class="num">11.066 chars</td><td class="num badge-good">97,4%</td></tr>
-    <tr><td>Fiocruz — dados abertos (Drupal)</td><td class="num">277.357 chars</td><td class="num">6.843 chars</td><td class="num badge-good">97,5%</td></tr>
-    <tr><td>Folha de S.Paulo — DeltaFolha</td><td class="num">1.040.660 chars</td><td class="num">27.723 chars</td><td class="num badge-good">97,3%</td></tr>
-    <tr><td>WhatsApp Web (snapshot)</td><td class="num">1.211.832 chars</td><td class="num">21.160 chars</td><td class="num badge-good">98,3%</td></tr>
+    <tr><td>Banco do Brasil (fatura de cartão)</td><td class="num">237.764 chars</td><td class="num">6.503 chars</td><td class="num badge-good">97,3%</td></tr>
+    <tr><td>gov.br — acervo de dados técnicos</td><td class="num">107.274 chars</td><td class="num">4.949 chars</td><td class="num badge-good">95,4%</td></tr>
+    <tr><td>gov.br — conjuntos de dados (CKAN)</td><td class="num">421.532 chars</td><td class="num">7.489 chars</td><td class="num badge-good">98,2%</td></tr>
+    <tr><td>Fiocruz — dados abertos (Drupal)</td><td class="num">277.357 chars</td><td class="num">4.686 chars</td><td class="num badge-good">98,3%</td></tr>
+    <tr><td>Folha de S.Paulo — DeltaFolha</td><td class="num">1.040.660 chars</td><td class="num">7.616 chars</td><td class="num badge-good">99,3%</td></tr>
+    <tr><td>WhatsApp Web (snapshot)</td><td class="num">1.211.832 chars</td><td class="num">14.462 chars</td><td class="num badge-good">98,8%</td></tr>
   </tbody>
 </table>
-<p><a href="benchmarks.html">Ver detalhes e amostras de saída →</a></p>
+<p>Em todas as 7 páginas reais e nas 11 do corpus público, o seletor de registro sintetizado alcança <strong>exatamente</strong> o conjunto de elementos que um humano anotou à mão — precisão e recall 1.0.</p>
+<p><a href="benchmarks.html">Ver detalhes, o corpus por modo de falha e amostras de saída →</a></p>
 
 <h2>Como funciona</h2>
-<p>Um pipeline de 7 etapas, cada uma resolvendo um problema real encontrado ao testar contra HTML de produção (não hipotético — <a href="decisions.html">veja as decisões de arquitetura</a>):</p>
+<p>Duas metades, num pipeline de 13 fases — cada uma resolvendo um problema real encontrado ao testar contra HTML de produção, não hipotético (<a href="decisions.html">veja as decisões de arquitetura</a>):</p>
 
 <ol class="pipeline">
   <li><strong>Sanitização estrutural</strong><span>Remove scripts, estilos, SVG, comentários, navegação/menus, widgets ocultos e atributos irrelevantes.</span></li>
   <li><strong>Dedup de subtree idêntico</strong><span>Colapsa decoração repetida byte-a-byte (ex. ícones SVG idênticos) sem tocar em registros de dados legítimos.</span></li>
-  <li><strong>Fingerprint estrutural com fallback</strong><span>data-testid → role/aria → classe semântica → id → forma — ignorando hashes de build e classes CSS atômicas.</span></li>
+  <li><strong>Fingerprint estrutural com fallback</strong><span>data-testid → role → classe semântica → id (só se reutilizado) → forma — ignorando hashes de build, classes atômicas, de estado e utilitárias.</span></li>
   <li><strong>Content signature</strong><span>Classifica cada campo de texto (DATE, MONEY, FILE_FORMAT, COUNT_LABELED...) sempre a partir do conteúdo, nunca da classe CSS.</span></li>
   <li><strong>Clusterização tolerante</strong><span>Agrupa elementos "quase idênticos", tolerando campos opcionais sem fragmentar o cluster.</span></li>
   <li><strong>Ranking de relevância</strong><span>Separa o conteúdo real do ruído dominante (menus repetem mais que dados — contagem bruta engana).</span></li>
   <li><strong>Sampling representativo</strong><span>Primeiro/meio/último + outliers estruturais e numéricos reais, não apenas os N primeiros itens.</span></li>
+  <li><strong>Ancoragem</strong><span>Carimba cada elemento do original antes da sanitização, para poder voltar a ele depois.</span></li>
+  <li><strong>Fecho e promoção</strong><span>Recupera registros que o agrupamento perdeu e sobe da família (frequentemente um wrapper interno) até o registro real.</span></li>
+  <li><strong>Síntese de seletor</strong><span>Gera candidatos e mede cada um contra o documento original; só aceita recall 1.0, e emite precisão 1.0 ou declara falha.</span></li>
+  <li><strong>Descoberta de campos</strong><span>Locator, tipo e captura de atributo (href/src) por campo, validados nos registros inteiros, não só na amostra.</span></li>
+  <li><strong>Nomeação</strong><span>Cabeçalho, itemprop, aria-label ou classe — só quando o valor é constante entre os registros; senão cai para tipo+posição.</span></li>
+  <li><strong>Execução e validação</strong><span>O ParserSpec (dado, não código) roda no HTML original e devolve conformidade de tipo por campo.</span></li>
 </ol>
+<p><a href="architecture.html">Ver o pipeline completo, algoritmo por algoritmo →</a></p>
 
 <h2>Exemplo rápido</h2>
-<pre><code>pip install dom2parser
-
-python -c "
-import dom2parser
+<pre><code>import dom2parser
 
 html = open('fatura.html').read()
 result = dom2parser.compress(html)
 
-print(result.text)        # representação compacta em texto
-print(result.reduction)   # {'reduction_pct': {'chars': 96.8, 'tokens': 96.8}, ...}
-"</code></pre>
+print(result.text)          # representação compacta em texto, com o seletor verificado
+print(result.reduction)     # {'reduction_pct': {'chars': 97.3, 'tokens': 97.3}, ...}
+
+from dom2parser.parser.executor import execute
+record = result.parser.records[0]
+print(execute(result.parser, html)[record.name].kept[0].values)
+# {'data': '28/07', 'transacoes': 'PGTO DEBITO CONTA...', 'moeda': 'R$', 'valor': '-11.966,18'}</code></pre>
+<p class="lede" style="font-size:0.95rem">Ainda não publicado no PyPI — instalação a partir do repositório clonado em <a href="usage.html#instalacao">uso e API</a>.</p>
 
 <div class="callout">
   <strong>Escopo do projeto:</strong> o DOM2parser comprime a página <em>e</em> gera o

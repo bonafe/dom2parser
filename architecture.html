@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Arquitetura — DOM2parser</title>
-<meta name="description" content="Arquitetura do pipeline e estrutura de módulos do DOM2parser.">
+<meta name="description" content="Como o DOM2parser encontra estruturas repetidas e sintetiza um parser verificado — pipeline completo, módulo por módulo.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗜️</text></svg>">
 <link rel="stylesheet" href="assets/style.css">
 </head>
@@ -27,13 +27,20 @@
 <main>
 
 <h1>Arquitetura</h1>
-<p class="lede">Como o HTML original vira uma representação compacta, e por quê.</p>
+<p class="lede">
+  Como o HTML original vira uma representação compacta e um parser verificado —
+  as 13 fases, módulo por módulo, com os algoritmos reais e as páginas que forçaram
+  cada regra.
+</p>
 
 <div class="toc">
   <strong>Nesta página</strong>
   <ul>
     <li><a href="#escopo">Escopo e fronteira do projeto</a></li>
-    <li><a href="#pipeline">O pipeline de 7 etapas</a></li>
+    <li><a href="#compressao">Parte 1 — Encontrar as estruturas (Fases 1-7)</a></li>
+    <li><a href="#identidade">Interlúdio — o que conta como identidade</a></li>
+    <li><a href="#parser">Parte 2 — Sintetizar o parser (Fases I-M)</a></li>
+    <li><a href="#corpus">Como isso é verificado</a></li>
     <li><a href="#modulos">Estrutura de módulos</a></li>
     <li><a href="#modelo">Modelo de dados</a></li>
     <li><a href="#saida">Formato de saída</a></li>
@@ -42,19 +49,21 @@
 
 <h2 id="escopo">Escopo e fronteira do projeto</h2>
 <p>
-  O DOM2parser recebe HTML e devolve duas coisas: uma representação estrutural
-  compacta (texto ou JSON) e um <strong>parser verificado</strong> para extrair os
-  registros. Ele continua não chamando nenhum LLM — a síntese do parser é uma busca
-  determinística, e o parser que sai é <em>dado</em>, executado por <code>lxml</code>,
-  nunca código passado por <code>exec()</code>. Ele roda contra o HTML
-  <em>original</em>, nunca contra a versão compactada.
+  O DOM2parser recebe HTML e devolve três coisas a partir de uma única passagem pelo
+  pipeline: uma representação estrutural compacta em texto, a mesma informação em
+  JSON, e um <strong>parser verificado</strong> (<code>ParserSpec</code>) pronto para
+  extrair os registros do documento original. As três nascem do mesmo
+  <code>compress()</code> — nenhuma é derivada de outra depois, e por isso não podem
+  discordar sobre o que foi encontrado.
 </p>
 <p>
-  A razão de não precisar de modelo é que a biblioteca tem uma informação que um LLM
-  consumindo a forma compacta não tem: os elementos-alvo em si. Isso transforma a
-  escolha do seletor numa busca <em>medida</em> — gera candidatos, roda cada um contra
-  o documento, fica com o que comprovadamente alcança todos os registros. Um modelo,
-  vendo sete amostras e um path truncado, estaria chutando.
+  A biblioteca <strong>não chama nenhum LLM</strong>. A síntese do parser é uma busca
+  determinística: como a biblioteca tem em mãos os elementos-alvo (não apenas amostras
+  deles), escolher um seletor é uma pergunta que se <em>mede</em> — gera candidatos,
+  roda cada um contra o documento, fica com o que comprovadamente alcança todos os
+  registros — em vez de uma pergunta que se chuta. Um modelo consumindo só a forma
+  compacta veria sete exemplos e um path truncado; a biblioteca vê o documento inteiro.
+  Para esse trabalho específico, medir é estritamente melhor que adivinhar.
 </p>
 <div class="tree">HTML original
    │
@@ -72,7 +81,7 @@ Representação compacta (texto/JSON schema 2) │
 ┌─────────────────────────────┐              │
 │  Fases I-M: sintetizar      │              │
 │  e verificar o parser       │              │
-│  (ancoragem → seletor →     │◄─────────────┘
+│  (ancoragem → registro →    │◄─────────────┘
 │   campos → ParserSpec)      │   mede os candidatos
 └─────────────────────────────┘   contra o original
    │
@@ -80,71 +89,128 @@ Representação compacta (texto/JSON schema 2) │
 ParserSpec (YAML/JSON) ── executor ──► registros extraídos
                                         do HTML ORIGINAL</div>
 <p>
-  Um seletor que casa demais sem que haja regra explicando a sobra nunca vira
-  registro: vai para <code>failures</code> com os quase-acertos medidos. Parser que
-  funciona pela metade é indistinguível de parser que funciona, e é pior que parser
-  nenhum.
+  A única parte genuinamente semântica — nomear um campo — também não usa modelo: os
+  nomes são lidos da própria página (linha de cabeçalho, <code>th</code>,
+  <code>itemprop</code>, <code>data-testid</code>, classe), com queda para tipo e
+  posição quando a página não diz nada. Um seletor que casa demais sem que haja regra
+  de conteúdo explicando a sobra nunca vira registro — vai para <code>failures</code>
+  com os candidatos que chegaram mais perto. Parser que funciona pela metade é
+  indistinguível de parser que funciona, e pior que parser nenhum.
 </p>
 
-<h2 id="pipeline">O pipeline de 7 etapas</h2>
-
-<h3>1 · Sanitização estrutural</h3>
+<h2 id="compressao">Parte 1 — Encontrar as estruturas (Fases 1-7)</h2>
 <p>
-  Remove <code>script</code>, <code>style</code>, <code>svg</code>, <code>noscript</code>,
-  <code>comment</code>, <code>meta</code>, <code>link</code> e trunca data-URIs inline.
+  Esta metade decide <em>o quê</em> é relevante na página. Ela nunca lê nada do HTML
+  original diretamente — trabalha sobre uma cópia sanitizada (Fase 1) e devolve
+  <code>Family</code> objects cujos elementos ainda apontam para essa cópia. A ponte de
+  volta ao documento original só é construída na Parte 2.
+</p>
+
+<h3>1 · Sanitização estrutural — <code>sanitize/</code></h3>
+<p>
+  <code>strip.sanitize()</code> faz um <code>copy.deepcopy()</code> da árvore <em>antes</em>
+  de tocar nela — o original nunca é mutado, e essa cópia intocada é o que a Fase I
+  (ancoragem) vai precisar depois. Sobre a cópia: remove <code>script</code>,
+  <code>style</code>, <code>svg</code>, <code>noscript</code>, comentários,
+  <code>meta</code>, <code>link</code>, e trunca data-URIs inline para um placeholder
+  curto (mantendo o atributo, já que sua presença pode importar estruturalmente, sem
+  pagar o custo de tokens do base64).
+</p>
+<p>
   Atributos ruidosos (<code>style</code>, handlers <code>on*</code>, atributos visuais
   legados como <code>bgcolor</code>/<code>cellpadding</code>) são removidos por
   <strong>denylist</strong>, não allowlist — mais seguro que arriscar descartar um
   <code>data-*</code> customizado que uma etapa posterior precise.
 </p>
 <p>
-  Também remove navegação/menus/sidebars/breadcrumbs (por tag, role ou palavra-chave em
-  classe/id) e widgets ocultos por <code>display:none</code> inline — mas
-  <strong>nunca</strong> por atributo <code>hidden</code> ou classe de ocultação via CSS
-  externo, porque sites reais usam isso para paginação client-side de conteúdo real
-  (ver <a href="decisions.html#adr-006">decisão sobre paginação oculta</a>).
+  <code>boilerplate.py</code> remove navegação/menus/sidebars/breadcrumbs (por tag,
+  role ou palavra-chave em classe/id) e widgets ocultos por <code>display:none</code>
+  inline — mas <strong>nunca</strong> por atributo <code>hidden</code> ou classe de
+  ocultação via CSS externo, porque sites reais usam isso para paginação client-side de
+  conteúdo real (ver <a href="decisions.html#adr-006">decisão sobre paginação oculta</a>).
 </p>
 
-<h3>2 · Dedup de subtree idêntico</h3>
+<h3>2 · Dedup de subtree idêntico — <code>sanitize/dedup_subtree.py</code></h3>
 <p>
   Colapsa subtrees byte-a-byte idênticos repetidos em escala (ex. um ícone SVG de
-  compartilhar repetido 484× num site de notícias) num único exemplar + contagem.
-  Limiar de contagem propositalmente alto — ver <a href="decisions.html#adr-002">por quê</a>.
+  compartilhar repetido 484× num site de notícias) num <code>&lt;template-ref&gt;</code>
+  + contagem, quando o número de repetições passa de <code>DEFAULT_MIN_COUNT = 50</code>
+  — limiar propositalmente alto, acima do maior registro real do corpus (100 manchetes
+  no folhadesp), para nunca engolir um conteúdo genuinamente repetido (ver
+  <a href="decisions.html#adr-002">por quê</a>).
+</p>
+<p>
+  <code>_serialize()</code> exclui o atributo <code>data-d2p-uid</code> do hash — sem
+  isso, o carimbo único que a Fase I grava em cada elemento tornaria toda subtree
+  única e desligaria esta etapa por completo (medido: folhadesp caiu de 1520 remoções
+  para 0).
 </p>
 
-<h3>3 · Fingerprint estrutural com fallback</h3>
-<p>Assinatura por elemento, numa cadeia de prioridade:</p>
-<div class="tree">data-testid → role/aria-* → classes semânticas → id → tag + forma dos filhos</div>
+<h3>3 · Fingerprint estrutural com fallback — <code>fingerprint/structural.py</code></h3>
+<p><code>compute_fingerprint()</code> tenta, em ordem de prioridade:</p>
+<div class="tree">data-testid → role → classes semânticas → id (só se reutilizado) → aria-* → tag + forma dos filhos</div>
+<p>
+  <code>id</code> só conta como identidade quando o documento o <strong>reutiliza</strong>
+  em mais de um elemento (<code>reused_ids()</code>) — por convenção HTML um id é único
+  por elemento, então tratá-lo como identidade padrão faria toda instância de um
+  registro parecer única e destruiria a clusterização. É mantido como fallback para o
+  caso (inválido mas real) de uma página reusar um id como classe de fato
+  (<code>#btnDownloadUrl</code> ×28 em <code>acervodadostecnicosgovbr.html</code>).
+</p>
 <p>
   Classes CSS "atômicas" (estilo Stylex/CSS-in-JS, ex. <code>x78zum5</code>) e
   atributos de hash de build uniformes (ex. <code>data-v-444d5111</code> do Vue scoped
-  CSS) são detectados e ignorados na comparação — são artefatos de compilação, não
-  identidade semântica.
+  CSS) são filtrados na comparação — são artefatos de compilação, não identidade
+  semântica. O detalhamento de <em>quais</em> classes contam como identidade está no
+  <a href="#identidade">interlúdio abaixo</a>, porque a resposta ficou mais interessante
+  do que "óbvio" depois de medida contra páginas reais.
+</p>
+<p>
+  <code>fingerprint_key()</code> descarta <code>children_tags</code> do fingerprint
+  sempre que a identidade já é específica (testid/role/classe/id) — dois
+  <code>div.textoItem</code> com números diferentes de filhos ainda contam como "o
+  mesmo tipo de nó" (tolerância a campo opcional). Só quando a identidade caiu para
+  <code>("shape",)</code> — nenhum sinal semântico — é que a tupla de tags-filhas entra
+  na chave, senão toda tabela sem classe da página colapsaria num cluster só.
 </p>
 
-<h3>4 · Content signature</h3>
-<p>Cada campo de texto é classificado <strong>sempre a partir do próprio texto</strong>, nunca da classe CSS:</p>
+<h3>4 · Content signature — <code>content/signature.py</code> + <code>content/classifiers.py</code></h3>
+<p>Cada campo de texto é classificado <strong>sempre a partir do próprio texto</strong>, nunca da classe CSS — a mesma classe CSS pode carregar um <code>FILE_FORMAT</code> num card e um <code>COUNT_LABELED</code> no vizinho:</p>
 <div class="grid grid-3">
-  <div class="card"><strong>Temporais</strong><br><code>DATE</code> <code>DATETIME</code> <code>TIME</code></div>
+  <div class="card"><strong>Temporais</strong><br><code>DATETIME</code> <code>DATE</code> <code>TIME</code></div>
   <div class="card"><strong>Numéricos</strong><br><code>MONEY</code> <code>CURRENCY</code> <code>INTEGER</code> <code>DECIMAL</code> <code>PERCENTAGE</code></div>
   <div class="card"><strong>Estruturados</strong><br><code>EMAIL</code> <code>URL</code> <code>PHONE</code> <code>BOOLEAN</code></div>
   <div class="card"><strong>Específicos do projeto</strong><br><code>FILE_FORMAT</code> <code>COUNT_LABELED</code></div>
   <div class="card"><strong>Genéricos</strong><br><code>TEXT</code> <code>EMPTY</code></div>
 </div>
-<p>Degrada graciosamente: texto que não bate em nenhum padrão específico vira <code>TEXT</code> (nunca força um tipo errado nem lança exceção).</p>
-
-<h3>5 · Clusterização tolerante</h3>
-<p>Dois níveis, porque estrutura DOM sozinha não basta:</p>
-<ol>
-  <li><strong>Estrutural</strong> — agrupa por fingerprint. Campos opcionais não fragmentam o grupo (um card sem selo de qualidade continua no mesmo cluster dos outros 9).</li>
-  <li><strong>Por assinatura de conteúdo</strong> — dentro de um grupo estrutural idêntico, sub-agrupa pela sequência de tipos dos filhos diretos. É assim que uma linha de transação (<code>DATE|TEXT|CURRENCY|MONEY</code>) se separa de uma linha de categoria (<code>EMPTY|TEXT|EMPTY|EMPTY</code>) mesmo quando ambas são <code>tr(td,td,td,td)</code> sem nenhuma classe distintiva.</li>
-</ol>
-
-<h3>6 · Ranking de relevância</h3>
 <p>
-  O componente mais heurístico do projeto. Contagem bruta de repetição <strong>não</strong>
-  indica relevância — um menu de navegação rotineiramente se repete mais que a tabela de
-  dados real. O score combina:
+  Degrada graciosamente: texto que não bate em nenhum padrão específico vira
+  <code>TEXT</code> (nunca força um tipo errado nem lança exceção). <code>MONEY</code>
+  aceita o valor com ou sem símbolo de moeda grudado — <code>match_money()</code> tira o
+  prefixo/sufixo antes de testar as regexes de duas casas decimais, porque toda listagem
+  de preço do corpus público (<code>£51.77</code>) o carrega junto, ao contrário da
+  fatura bancária, onde a moeda mora numa coluna própria.
+</p>
+
+<h3>5 · Clusterização tolerante — <code>cluster/siblings.py</code></h3>
+<p>Dois níveis, porque estrutura DOM sozinha não basta — é a própria conclusão do estudo de caso do Banco do Brasil na spec original:</p>
+<ol>
+  <li><strong>Estrutural</strong> (<code>group_by_fingerprint</code>) — agrupa por fingerprint. Campos opcionais não fragmentam o grupo.</li>
+  <li><strong>Por assinatura de conteúdo</strong> (<code>content_signature_sequence</code>) — dentro de um grupo estrutural idêntico, sub-agrupa pela sequência de tipos dos filhos diretos. É assim que uma linha de transação (<code>DATE|TEXT|CURRENCY|MONEY</code>) se separa de uma linha de categoria (<code>EMPTY|TEXT|EMPTY|EMPTY</code>) mesmo quando ambas são <code>tr(td,td,td,td)</code> sem nenhuma classe distintiva.</li>
+</ol>
+<p>
+  <code>optional_field_presence()</code> mede, para descendentes com identidade
+  semântica (não <code>("shape",)</code>), em quantos elementos do cluster cada um
+  aparece — <code>optional_fields()</code> filtra para os que aparecem em <em>parte</em>
+  mas não em todos, que é o material bruto do <code>optional_fields</code> exibido na
+  saída.
+</p>
+
+<h3>6 · Ranking de relevância — <code>cluster/rank.py</code></h3>
+<p>
+  O componente mais heurístico do projeto. Contagem bruta de repetição
+  <strong>não</strong> indica relevância — um menu de navegação rotineiramente se
+  repete mais que a tabela de dados real. <code>score_cluster()</code> combina:
 </p>
 <ul>
   <li>Diversidade de tipos de conteúdo informativos (campos com <code>DATE</code>/<code>MONEY</code>/etc. pontuam mais que <code>TEXT</code>/<code>EMPTY</code> puros)</li>
@@ -152,49 +218,360 @@ ParserSpec (YAML/JSON) ── executor ──► registros extraídos
   <li>Palavras-chave de contêiner ancestral (bônus: <code>result</code>/<code>row</code>/<code>item</code>; penalidade: <code>nav</code>/<code>menu</code>/<code>sidebar</code>)</li>
   <li>Tamanho de texto do próprio registro (log-amortecido)</li>
 </ul>
-<p>Todos os sinais são <strong>limitados em profundidade</strong> (3 níveis) — um sinal recursivo irrestrito faria um contêiner genérico grande "herdar" a riqueza de tudo que está aninhado dentro dele e vencer o registro real que ele envolve.</p>
+<p>Todos os sinais são <strong>limitados em profundidade</strong> (<code>SIGNAL_MAX_DEPTH = 3</code>) e amostrados em no máximo <code>MAX_ELEMENTS_SAMPLED = 20</code> elementos — um sinal recursivo irrestrito faria um contêiner genérico grande "herdar" a riqueza de tudo que está aninhado dentro dele e vencer o registro real que ele envolve.</p>
+<p>
+  <code>cluster/families.py</code> agrupa clusters do mesmo fingerprint <em>e</em>
+  mesmo caminho de ancestral (<code>location_key</code>) numa <code>Family</code> só,
+  atribuindo papéis (<code>primary</code>/<code>section</code>/<code>summary</code>/
+  <code>empty</code>/<code>variant</code>, em <code>cluster/roles.py</code>) — é o que
+  impede que as 12 linhas de categoria de uma fatura, que sozinhas pontuariam baixo,
+  sejam descartadas mesmo compartilhando o formato exato das 122 linhas de transação
+  que <em>são</em> selecionadas.
+</p>
 
-<h3>7 · Sampling representativo</h3>
-<p>Primeiro, segundo, meio, penúltimo, último — mais outliers reais: valor numérico mínimo/máximo por campo (ex. o maior débito de uma fatura) e o registro com texto mais curto/mais longo.</p>
+<h3>7 · Sampling representativo — <code>sampling/representative.py</code> + <code>cluster/outliers.py</code></h3>
+<p>Primeiro, segundo, meio, penúltimo, último — mais outliers reais: valor numérico mínimo/máximo por posição de campo (ex. o maior débito de uma fatura) e o registro com texto mais curto/mais longo. Capado por <code>max_samples_per_cluster</code> (padrão 7), com as posições representativas mantidas primeiro se precisar cortar.</p>
+
+<h2 id="identidade">Interlúdio — o que conta como identidade</h2>
+<p>
+  Três funções em <code>fingerprint/hashattrs.py</code> decidem se um token de classe é
+  identidade, e cada uma existe por causa de uma classe de erro medida numa página real
+  — não de uma regra abstrata pensada antes.
+</p>
+<table>
+  <thead><tr><th>Função</th><th>Rejeita</th><th>Página que forçou</th></tr></thead>
+  <tbody>
+    <tr><td><code>looks_like_atomic_class_token</code></td><td>classe gerada (Stylex <code>x78zum5</code>, literais de bug <code>false</code>/<code>true</code>)</td><td>WhatsApp Web — 5-25 classes atômicas por elemento</td></tr>
+    <tr><td><code>looks_like_state_class_token</code></td><td>classe de estado transiente (<code>is-hidden</code>, <code>has-error</code>, <code>active</code>)</td><td>Folha — <code>is-hidden</code> partia 100 manchetes em 70+30</td></tr>
+    <tr><td><code>looks_like_utility_class_token</code></td><td>classe de layout (Bootstrap/Tailwind/Primer: <code>col-md-3</code>, <code>mb-5</code>, <code>no-underline</code>, <code>f3</code>)</td><td>Books to Scrape, GitHub Topics — utilitária vencia a classe semântica real</td></tr>
+  </tbody>
+</table>
+<p>
+  <code>semantic_class_tokens()</code> é o funil por onde fingerprinting <em>e</em> path
+  passam — filtra as três. <code>discriminating_class_tokens()</code> é a exceção
+  deliberada: ela <strong>mantém</strong> classes de estado, porque uma classe de
+  estado é inútil para responder "o que é este elemento?" e ideal para responder "o que
+  separa este grupo daquele?" — é o que permite a síntese de seletor propor
+  <code>li.item:not(.is-hidden)</code>.
+</p>
+<div class="callout warn">
+  <strong>A lista de classes utilitárias é lexical, de propósito.</strong> A hipótese
+  óbvia — "utilitária aparece espalhada por muitas tags e contextos, semântica marca um
+  tipo de elemento num lugar só" — foi medida contra o corpus inteiro e
+  <strong>não se sustenta</strong>: <code>no-underline</code> aparece 41 vezes numa
+  única tag sob um único pai, e <code>toctree-l1</code> aparece 40 vezes numa única tag
+  sob um único pai. Não há sinal estrutural no documento que separe as duas; a diferença
+  é que um vocabulário é publicado por um framework de CSS e o outro é do autor da
+  página. A lista é, portanto, uma lista de palavras — errada nas bordas, do mesmo jeito
+  que <code>looks_like_atomic_class_token</code> — e isso está registrado no código
+  (<code>hashattrs.py</code>) para que ninguém gaste outra tarde procurando a versão
+  estrutural.
+</div>
+<p>
+  Um id passa por regra parecida em <code>fingerprint/structural.py::generated_ids()</code>,
+  usada só na síntese de seletor (Fase J): um id é <em>gerado</em> quando pertence a uma
+  família grande de mesmo prefixo de dois caracteres <strong>e</strong> o que vem depois
+  é um token curto e opaco — <code>mw</code>+<code>hg</code>, <code>0A</code>,
+  <code>B_k</code> (Parsoid da Wikipédia). Separador não resolve isso, embora pareça que
+  deveria: os tokens do Parsoid são base64url e carregam <code>-</code>/<code>_</code>
+  próprios. Medido: 6671 dos 7699 ids de um artigo são marcados, enquanto
+  <code>term-*</code>, <code>section-*</code>, <code>main-*</code> e <code>score_*</code>
+  ficam intactos. Um id gerado nunca ancora um seletor — no lugar dele entra uma âncora
+  posicional (<code>table:nth-of-type(2)</code>).
+</p>
+
+<h2 id="parser">Parte 2 — Sintetizar o parser (Fases I-M)</h2>
+<p>
+  A saída da Parte 1 <em>descreve</em> uma estrutura repetida mas não a
+  <em>endereça</em>: diz que a posição 1 tem um <code>DATE</code>, nunca que a posição 1
+  é <code>td.tituloLancamento</code>; e o <code>path_display</code> não serve como
+  seletor (truncado, com máscaras <code>*</code>, derivado da árvore sanitizada). As
+  cinco fases seguintes fecham esse buraco, sempre voltando ao documento
+  <strong>original</strong>.
+</p>
+
+<h3>I · Ancoragem — <code>anchor.py</code></h3>
+<p>
+  <code>stamp_uids(root)</code> grava um <code>data-d2p-uid</code> incremental em cada
+  elemento do documento original, <strong>antes</strong> da sanitização copiar a
+  árvore — o <code>deepcopy</code> da Fase 1 leva o carimbo junto, então todo elemento
+  da cópia sabe exatamente qual elemento do original lhe deu origem.
+  <code>build_index()</code> monta o mapa <code>uid → elemento original</code>;
+  <code>to_original()</code>/<code>originals_for()</code> resolvem um elemento (ou
+  lista) da cópia de volta. Elementos destruídos pelo dedup de subtree (Fase 2) viram
+  <code>&lt;template-ref&gt;</code> sem carimbo — <code>originals_for()</code> os
+  descarta silenciosamente, porque um placeholder nunca teve fingerprint específico e
+  jamais seria candidato a família.
+</p>
+
+<h3>J · Fecho, promoção e seletor de registro — <code>parser/records.py</code> + <code>parser/selector.py</code></h3>
+<p>
+  Uma <code>Family</code> não é o registro, por dois motivos medidos, não presumidos:
+</p>
+<ul>
+  <li>
+    <strong>Ela é incompleta.</strong> O agrupamento por conteúdo (Fase 5) abandona
+    linhas que classificam de forma atípica — no Banco do Brasil, duas transações
+    comuns cuja descrição começava com dígito viraram <code>COUNT_LABELED</code>,
+    formaram cluster de tamanho 1 e caíram abaixo de <code>min_cluster_size</code>. A
+    família tinha 152 das 154 linhas reais. <code>closure(family, clean_root)</code>
+    recalcula o conjunto puramente por <code>structural_identity</code> — o par
+    <code>(fingerprint normalizado, location_key)</code> — devolvendo todo elemento do
+    documento que compartilha essa identidade, não só os que sobreviveram ao
+    agrupamento por conteúdo.
+  </li>
+  <li>
+    <strong>Ela é profunda demais.</strong> <code>content_signature_sequence</code>
+    lê o texto dos <em>filhos diretos</em>, então o ranking prefere o nível mais fundo
+    em que os filhos ainda diferem — tipicamente um wrapper interno do registro, não o
+    registro. Medido: a sobreposição entre os elementos da família e os elementos do
+    registro real (ground truth escrito à mão) era <strong>exatamente zero</strong> em
+    quatro das seis páginas originais. <code>promote(elements)</code> resolve isso.
+  </li>
+</ul>
+<p><code>promote()</code> sobe a árvore, nível por nível, com uma regra de parada que olha para os pais:</p>
+<ul>
+  <li><strong>Pais distintos</strong> (cada elemento tem seu próprio pai) → sobe, é só mais um nível do mesmo registro.</li>
+  <li><strong>Pais compartilhados, poucos elementos por pai</strong> (no máximo <code>MAX_PARTS = 4</code>, e ao menos <code>MIN_FANOUT_PARENTS = 3</code> pais distintos) → sobe também. Esse é o <em>fan-out para baixo</em>: cada linha de conversa do WhatsApp são dois <code>div</code> irmãos sem identidade (ícone, texto) dentro do registro real; sem esta regra a subida parava exatamente um nível abaixo do registro, porque "pai compartilhado" também é o sinal de "cheguei ao contêiner da coleção". O que distingue as duas situações é o tamanho do fan-out: 46 divs colapsam em 23 pais <em>de dois em dois</em>; 154 linhas de fatura colapsam em 2 <code>tbody</code> <em>de 77 em 77</em>. Dois pais não bastam (<code>MIN_FANOUT_PARENTS</code>) — senão duas tabelas pequenas de três linhas cada virariam um "registro" de <code>tbody</code>.</li>
+  <li><strong>Pai compartilhado, muitos por pai, ou só dois pais</strong> → para. Isto é o contêiner da coleção; o nível anterior é o registro.</li>
+</ul>
+<p>
+  Cada nível promovido precisa ser <strong>re-fechado</strong> antes do próximo ser
+  escalado a partir dele (<code>completed_levels()</code>) — subir pode revelar
+  elementos que a semente original não cobria (o WhatsApp tem uma linha de "conversas
+  trancadas" fora da lista virtualizada, com o mesmo <code>data-testid</code> mas
+  <code>location_key</code> diferente das outras 22), e só olhando o pai <em>desse</em>
+  elemento adicional é que a subida sabe que ainda não chegou à fronteira certa.
+  <code>closure_of()</code> também trata <code>data-testid</code> como
+  independente de localização — é marcador de tipo de componente, vale o mesmo onde
+  quer que o componente esteja montado — mantendo identidade por classe exigindo
+  localização igual (<code>div.limites &gt; div.textoItem</code> continua diferente de
+  <code>div.totalFatura &gt; div.textoItem</code>).
+</p>
+<p>
+  Entre os níveis com seletor exato, o critério de escolha é: o mais externo que ainda
+  carregue identidade própria (testid ou classe semântica) — <code>_has_identity()</code>
+  em <code>parser/build.py</code>. Isso resolve o empate entre dois invólucros 1:1: em
+  <code>books.toscrape.com</code>, <code>article.product_pod</code> está dentro de um
+  <code>li</code> sem classe; ambos selecionam os mesmos vinte elementos, mas um humano
+  chamaria o <code>article</code> de registro, e é ele que carrega identidade.
+</p>
+<p><code>parser/selector.py::synthesize(targets, root, generated_ids)</code> faz a busca:</p>
+<ol>
+  <li>Gera candidatos a partir da identidade compartilhada pelos alvos: <code>data-testid</code>/<code>id</code> (exato ou por prefixo comum, cobrindo o caso <code>*</code> mascarado pela Fase de path), combinações de classes semânticas (tamanho 3→1), tag pura.</li>
+  <li>Ancora em até <code>MAX_ANCESTOR_LEVELS = 4</code> níveis de ancestral, com combinador descendente <em>e</em> filho direto — o filho direto é o que resolve o caso do WhatsApp, onde o combinador descendente sozinho casava divs em profundidades diferentes.</li>
+  <li>Refina candidatos que casam demais com <code>:not(.classe)</code>, usando <code>discriminating_class_tokens</code> (que mantém classe de estado) tanto no próprio elemento quanto nos ancestrais — é como se chega em <code>li.c-headline:not(.is-hidden)</code>.</li>
+  <li>Ids marcados por <code>generated_ids()</code> nunca entram como predicado de atributo.</li>
+  <li>Ordena candidatos do menor para o maior, com a tag pura sempre por último (uma tag sem qualificador funciona hoje e quebra no dia em que um segundo elemento do mesmo tipo aparecer na página), e para no primeiro que bate recall 1.0 e precisão 1.0.</li>
+</ol>
+<p>
+  <strong>Critério de aceitação assimétrico.</strong> Recall 1.0 é obrigatório — um
+  registro que o seletor não alcança é um registro que o parser nunca devolve, em
+  silêncio. Precisão abaixo de 1.0 é medida e reportada mas não decide sozinha: quem
+  decide o que fazer com a sobra é o <code>parser/build.py</code>, que só emite o
+  registro se achar um candidato com <strong>as duas</strong> em 1.0; senão a estrutura
+  vai para <code>failures</code> com os <code>near_misses</code> medidos.
+</p>
+
+<h3>K · Locator e nome de campo — <code>parser/fields.py</code> + <code>parser/naming.py</code></h3>
+<p>
+  <code>discover(records, span)</code> encontra os campos comuns a todos os registros —
+  nunca a partir de <code>records[0]</code> sozinho: <code>_representative_indices()</code>
+  escolhe o registro de forma <strong>modal</strong> (filhos e netos), mais o mais largo
+  quando difere. Isso importa porque numa tabela cujo primeiro registro é a própria
+  linha de cabeçalho (<code>th</code>), usar só ele geraria locators
+  <code>th:nth-of-type(k)</code> que nunca resolvem nas linhas de dado.
+</p>
+<p>Um elemento é candidato a campo (<code>_candidate_fields</code>) quando é uma <strong>folha de texto</strong> (<code>_is_text_leaf</code>) ou carrega um atributo de captura. A regra de folha é a mais sutil do módulo:</p>
+<ul>
+  <li>Um filho <em>de bloco</em> com texto sempre faz do elemento um contêiner (nunca uma folha).</li>
+  <li>Um filho <em>inline</em> (<code>a</code>, <code>span</code>, <code>code</code>, <code>em</code>...) só conta como parte da prosa quando o texto <strong>próprio</strong> do elemento supera o dos filhos inline — uma definição de glossário com dois links é um valor só; mas o <code>td.title</code> do Hacker News, cujo texto inteiro está em <code>span.titleline</code> + <code>span.sitebit</code>, tem dois sub-campos rotulados, não um.</li>
+  <li>Um filho cujo texto inteiro é um símbolo isolado (<code>is_decoration</code> — o <code>¶</code> de um permalink) não conta nem para um lado nem para outro.</li>
+</ul>
+<p>
+  <code>_locator_candidates()</code> gera, em ordem de estabilidade: identidade própria
+  (<code>itemprop</code>, <code>data-testid</code>, classe semântica), ancorado num
+  ancestral intermediário (por identidade ou por posição — o <code>h3</code> acima de um
+  título, a célula de uma tabela), e posicional puro como último recurso. Um locator sem
+  ancestral vira <code>&gt; tag:nth-of-type(k)</code> — a forma "filho direto" do
+  Selectors 4 — porque <code>p:nth-of-type(1)</code> sozinho compila para um XPath
+  <code>descendant::</code> e também encontrava o primeiro parágrafo de caixas de nota
+  aninhadas dentro da definição, perdendo o parágrafo principal por ambiguidade.
+</p>
+<p>
+  <code>_capture_attrs()</code> decide entre texto e atributo: <code>a→href</code>,
+  <code>img→src</code>, <code>time→datetime</code>, mais <code>title</code> quando
+  presente (onde um card guarda a versão não truncada de um texto visível). Um elemento
+  que tem as duas coisas (texto e atributo) vira <strong>dois campos</strong>, com a
+  coluna de atributo herdando o nome da coluna de texto mais um sufixo
+  (<code>titulo</code> / <code>titulo_url</code>).
+</p>
+<p><code>naming.py::element_name()</code> é a cascata de nomes, andando do elemento do campo até (mas não incluindo) o elemento do escopo:</p>
+<div class="tree">itemprop → data-testid → aria-label → classe semântica → tag com significado HTML (dt/dd/time/img/...) → tipo+posição</div>
+<p>
+  Cada passo só é aceito se a evidência for <strong>constante entre os registros</strong>
+  (<code>_constant_across</code>) — um nome descreve a coluna; valor que muda por
+  registro é dado, não nome. Sem essa checagem, o <code>aria-label</code> de um card de
+  notícia (que carrega a manchete <em>daquele</em> card) virava o nome do campo inteiro.
+  Quando nada na cascata resolve, o nome cai para <code>tipo_posição</code>
+  (<code>date_1</code>, <code>money_4</code>) e um humano renomeia editando o
+  <code>ParserSpec</code>.
+</p>
+<p>
+  <code>table_header_cells()</code> lê nomes de uma linha <code>&lt;th&gt;</code> de
+  verdade quando os registros são linhas de uma tabela — mapeando pela célula
+  <em>ancestral</em> do valor, não só pela célula bruta, para que um valor aninhado
+  (<code>td &gt; a</code>) ainda receba o nome da sua coluna.
+  <code>header_names()</code> é o caso irmão: um cabeçalho escondido <em>entre</em> os
+  próprios registros, com células <code>td</code> — o caso do Banco do Brasil, onde a
+  linha <code>['Data','Transações','Moeda','Valor']</code> é, estruturalmente, mais uma
+  linha da tabela.
+</p>
+<p>
+  <code>_prune()</code> descarta campo-furniture: um valor idêntico em <strong>todos</strong>
+  os registros, sem atributo de captura, classificado como <code>TEXT</code>/<code>EMPTY</code>
+  — o botão "Acessar o recurso" repetido em cada card. A coluna <code>R$</code>
+  constante de uma fatura sobrevive porque classifica como <code>CURRENCY</code>, não
+  <code>TEXT</code>. Um valor visto numa única ocorrência (<code>MIN_FIELD_PRESENCE = 2</code>)
+  também é descartado — a mesma barra que <code>min_cluster_size</code> usa para
+  estrutura, aplicada a campo.
+</p>
+
+<h3>Registro espalhado por irmãos — <code>span</code></h3>
+<p>
+  Em três padrões do corpus um registro não é um elemento: é vários <strong>irmãos
+  consecutivos</strong>. Um item do Hacker News são três <code>&lt;tr&gt;</code>
+  (título, subtexto, espaçador); uma entrada de glossário é <code>dt</code>+<code>dd</code>.
+  <code>period(anchors)</code> corta os filhos do contêiner comum em cada âncora — os
+  segmentos resultantes repetem um padrão (<code>(tr,tr,tr)</code>,
+  <code>(dt,dd)</code>); o comprimento modal é o <code>span</code>, e um segmento pode
+  terminar mais cedo (dois termos dividindo uma definição) mas nunca ultrapassar o
+  padrão.
+</p>
+<p>
+  A família pode ter caído no membro errado do período — a <code>dd</code>, não a
+  <code>dt</code> — e emparelhar cada definição com o <em>próximo</em> termo seria
+  silenciosamente errado. <code>anchor_offsets(anchors)</code> ordena os deslocamentos
+  candidatos pela quantidade de identidade (testid, classe, id) que cada posição do
+  período carrega; <code>shift_anchors()</code> aplica o deslocamento, e o resultado é
+  re-fechado e re-verificado (seletor exato outra vez) antes de <code>period()</code> ser
+  consultado de novo — só assim o termo órfão (sem definição própria) entra no conjunto.
+  Cada <code>FieldEntry</code> carrega <code>sibling</code>: a qual elemento do
+  segmento seu <code>locator</code> é relativo (<code>scoped_element()</code>, em
+  <code>fields.py</code>, nunca atravessa para o segmento seguinte).
+</p>
+
+<h3>L · O parser serializado — <code>parser/spec.py</code></h3>
+<p>
+  <code>ParserSpec</code> é <strong>dado, não código</strong>: dataclasses congeladas
+  (<code>RecordEntry</code>, <code>FieldEntry</code>) serializáveis em YAML ou JSON, com
+  <code>schema_version</code>. Nada aqui passa por <code>exec()</code> — o executor
+  interpreta o seletor com <code>cssselect</code>/<code>lxml</code> e o locator com XPath
+  relativo, nunca compila string arbitrária como código Python.
+</p>
+
+<h3>M · Executor e validação — <code>parser/executor.py</code> + <code>parser/validate.py</code></h3>
+<p>
+  <code>execute(spec, html)</code> reanalisa o HTML <strong>original</strong> do zero —
+  nunca reaproveita a árvore da compressão — e devolve um <code>Extraction</code> por
+  tipo de registro. <code>compile_record()</code> compila o seletor e os XPaths dos
+  campos uma vez só; <code>record_values()</code> resolve cada campo relativo ao
+  elemento de escopo certo (<code>scoped_element</code>, respeitando <code>sibling</code>).
+  Registros são <strong>skipados, nunca descartados</strong>: cada um carrega
+  <code>skipped</code>/<code>skip_reason</code> (<code>all_empty</code> — linha
+  totalmente vazia — ou <code>header_values</code> — bate com o cabeçalho literal que
+  nomeou os campos), porque quem recebe 139 de 154 linhas não tem como distinguir um
+  descarte deliberado de um locator quebrado sem essa informação.
+</p>
+<p>
+  <code>validate()</code> devolve a contagem de presença e a
+  <strong>conformidade de tipo</strong> por campo — reaproveitando
+  <code>content/signature.py::classify()</code>, o mesmo classificador que decidiu o
+  tipo do campo durante a síntese, agora rodado sobre o valor extraído de verdade.
+  Um campo declarado <code>MONEY</code> cujos valores pararam de classificar como
+  <code>MONEY</code> é sinal de que o locator escorregou para o elemento errado — o
+  tipo de falha que uma checagem de mera taxa de preenchimento não pega.
+</p>
+
+<h2 id="corpus">Como isso é verificado</h2>
+<p>
+  <code>examples/</code> guarda 7 páginas reais com dado pessoal (faturas, conversas) e
+  é <code>.gitignore</code>d — a maior parte da suíte só roda na máquina de quem tem os
+  arquivos. <code>corpus/</code> é o contraponto <strong>commitado</strong>: 11 páginas
+  públicas sem dado pessoal, cada uma escolhida por um <strong>modo de falha</strong>
+  específico (id gerado pelo Parsoid, <code>rowspan</code>, fan-out lateral, fan-out
+  para baixo, classe utilitária sem semântica nenhuma, valor por instância em
+  <code>aria-label</code>...) — ver <a href="benchmarks.html#corpus">a tabela completa</a>.
+</p>
+<p><code>corpus/ground_truth.yaml</code> registra, por página, o que um humano extrairia; <code>tests/test_corpus.py</code> mede quatro coisas contra isso:</p>
+<ul>
+  <li><strong>registro</strong> — o conjunto de elementos do seletor sintetizado bate com o do ground truth (ou é um invólucro 1:1 dele);</li>
+  <li><strong>nomes</strong> — os nomes que a própria página fornece foram de fato derivados;</li>
+  <li><strong>quantidade de campos</strong> — onde a página não nomeia nada, quantos valores por registro saíram;</li>
+  <li><strong>valores</strong> — a extração devolve valores lidos <em>à mão</em> da marcação. É a única checagem que separa "o seletor e os nomes parecem certos" de "o dado saiu certo" — pega locator que escorregou para um invólucro, valor colado no vizinho, título truncado na forma visível quando o completo está num atributo.</li>
+</ul>
+<p>
+  Toda lacuna conhecida vira <code>pytest.mark.xfail(strict=True)</code> com a razão
+  medida no código — nunca uma asserção afrouxada. Consertar a lacuna faz o teste
+  passar inesperadamente, o que quebra a suíte até o marcador ser removido: a correção
+  <em>tem</em> que ser notada.
+</p>
 
 <h2 id="modulos">Estrutura de módulos</h2>
 <div class="tree">dom2parser/
-├── __init__.py          # API pública: compress(html) -> CompactRepresentation
-├── html_io.py           # parsing via lxml (recovering parser)
-├── dom_utils.py         # helpers de extração de texto compartilhados
+├── __init__.py             # API pública: compress(html) -> CompactRepresentation
+├── html_io.py              # parsing via lxml (recovering parser)
+├── dom_utils.py            # helpers de extração de texto compartilhados
+├── anchor.py               # Fase I: carimbo de uid, mapa original ↔ cópia sanitizada
 │
 ├── sanitize/
-│   ├── strip.py          # etapa 1: remove tags/comentários/data-URIs
-│   ├── attrs.py           # denylist de atributos ruidosos
-│   ├── boilerplate.py      # remoção de nav/menu/sidebar + widgets ocultos
-│   └── dedup_subtree.py    # etapa 2: dedup de subtree idêntico
+│   ├── strip.py             # Fase 1: remove tags/comentários/data-URIs (deepcopy)
+│   ├── attrs.py              # denylist de atributos ruidosos
+│   ├── boilerplate.py         # remoção de nav/menu/sidebar + widgets ocultos
+│   └── dedup_subtree.py        # Fase 2: dedup de subtree idêntico
 │
 ├── fingerprint/
-│   ├── hashattrs.py        # detecção de classes atômicas e hashes de build
-│   └── structural.py        # etapa 3: fingerprint com fallback
+│   ├── hashattrs.py             # classe atômica/estado/utilitária, hash de build, ids gerados
+│   └── structural.py             # Fase 3: fingerprint com fallback, reused_ids, generated_ids
 │
 ├── content/
-│   ├── classifiers.py        # regex/parsers por tipo
-│   └── signature.py           # etapa 4: orquestração ordenada por especificidade
+│   ├── classifiers.py             # regex/parsers por tipo
+│   └── signature.py                # Fase 4: orquestração ordenada por especificidade
 │
 ├── cluster/
-│   ├── siblings.py             # etapa 5: clusterização em 2 níveis
-│   ├── rank.py                  # etapa 6: score de relevância
-│   └── outliers.py               # outliers numéricos e de texto
+│   ├── siblings.py                  # Fase 5: clusterização em 2 níveis
+│   ├── rank.py                       # Fase 6: score de relevância
+│   ├── roles.py                       # papéis (primary/section/summary/empty/variant)
+│   ├── families.py                     # agrupamento por fingerprint + localização
+│   └── outliers.py                      # outliers numéricos e de texto
 │
 ├── sampling/
-│   └── representative.py          # etapa 7: seleção de amostras
+│   └── representative.py                 # Fase 7: seleção de amostras
 │
 ├── compact/
-│   ├── paths.py                    # caminho legível do ancestral (ex. "form#x > ul.y > tr")
-│   ├── render_text.py               # renderer de texto estruturado
-│   ├── render_json.py                # renderer JSON
-│   └── tokens.py                      # contagem de chars/tokens (tiktoken opcional)
+│   ├── paths.py                           # path legível + máscara de * por instância
+│   ├── render_text.py                      # renderer de texto estruturado
+│   ├── render_json.py                       # renderer JSON (schema 2)
+│   └── tokens.py                             # contagem de chars/tokens (tiktoken opcional)
+│
+├── parser/                                  # Fases I-M: síntese e execução do parser
+│   ├── records.py                            # Fase J: structural_identity, closure, promote,
+│   │                                          #         completed_levels, period, anchor_offsets
+│   ├── selector.py                            # Fase J: síntese e verificação de seletor
+│   ├── fields.py                               # Fase K: descoberta de locator e captura
+│   ├── naming.py                                # Fase K: cascata de nomes, slugify
+│   ├── spec.py                                   # Fase L: ParserSpec/RecordEntry/FieldEntry
+│   ├── build.py                                   # orquestra J+K+L a partir das families
+│   ├── executor.py                                 # Fase M: roda o spec no HTML original
+│   └── validate.py                                  # Fase M: presença + conformidade de tipo
 │
 ├── eval/
-│   └── harness.py                      # suíte de regressão contra os 6 exemplos reais
+│   └── harness.py                                    # suíte de regressão de ranking (examples/)
 │
-└── cli.py                                # wrapper fino p/ testes manuais (não é o produto)</div>
+└── cli.py                                             # wrapper fino p/ testes manuais (não é o produto)
+
+corpus/                     # 11 páginas públicas + ground_truth.yaml (commitado, roda em CI)
+examples/                   # 7 páginas reais com dado pessoal (gitignored, só local)</div>
 
 <h2 id="modelo">Modelo de dados</h2>
 <table>
@@ -203,9 +580,16 @@ ParserSpec (YAML/JSON) ── executor ──► registros extraídos
     <tr><td><code>Fingerprint</code></td><td><code>tag</code>, <code>identity</code>, <code>children_tags</code></td><td><code>fingerprint/structural.py</code></td></tr>
     <tr><td><code>Cluster</code></td><td><code>structural_key</code>, <code>content_signature</code>, <code>elements</code></td><td><code>cluster/siblings.py</code></td></tr>
     <tr><td><code>ClusterScore</code></td><td><code>cluster</code>, <code>score</code>, <code>signals</code></td><td><code>cluster/rank.py</code></td></tr>
+    <tr><td><code>Family</code> / <code>FamilyMember</code></td><td><code>family_key</code>, <code>members</code>, <code>container_path</code> / <code>role</code>, <code>sample</code></td><td><code>cluster/families.py</code></td></tr>
     <tr><td><code>Sample</code></td><td><code>cluster</code>, <code>indices</code>, <code>reasons</code></td><td><code>sampling/representative.py</code></td></tr>
     <tr><td><code>Signature</code></td><td><code>type</code>, <code>raw</code>, <code>value</code></td><td><code>content/signature.py</code></td></tr>
-    <tr><td><code>CompactRepresentation</code></td><td><code>text</code>, <code>json</code>, <code>reduction</code></td><td><code>dom2parser/__init__.py</code></td></tr>
+    <tr><td><code>PathSegment</code></td><td><code>tag</code>, <code>kind</code>, <code>value</code>, <code>display</code></td><td><code>compact/paths.py</code></td></tr>
+    <tr><td><code>SelectorFit</code> / <code>Synthesis</code></td><td><code>selector</code>, <code>matched</code>, <code>precision</code>, <code>recall</code> / <code>fit</code>, <code>near_misses</code></td><td><code>parser/selector.py</code></td></tr>
+    <tr><td><code>FieldSpec</code></td><td><code>name</code>, <code>name_source</code>, <code>locator</code>, <code>type</code>, <code>capture</code>, <code>sibling</code></td><td><code>parser/fields.py</code></td></tr>
+    <tr><td><code>ParserSpec</code> / <code>RecordEntry</code> / <code>FieldEntry</code></td><td><code>records</code>, <code>failures</code> / <code>selector</code>, <code>span</code>, <code>verified</code>, <code>skip_when</code> / <code>locator</code>, <code>sibling</code></td><td><code>parser/spec.py</code></td></tr>
+    <tr><td><code>Record</code> / <code>Extraction</code></td><td><code>values</code>, <code>skipped</code>, <code>skip_reason</code> / <code>records</code>, <code>.kept</code></td><td><code>parser/executor.py</code></td></tr>
+    <tr><td><code>ValidationReport</code> / <code>FieldMetrics</code></td><td><code>found</code>, <code>skipped</code>, <code>fields</code>, <code>failures</code> / <code>present</code>, <code>conforming</code></td><td><code>parser/validate.py</code></td></tr>
+    <tr><td><code>CompactRepresentation</code></td><td><code>text</code>, <code>json</code>, <code>reduction</code>, <code>parser</code></td><td><code>dom2parser/__init__.py</code></td></tr>
   </tbody>
 </table>
 
@@ -214,13 +598,26 @@ ParserSpec (YAML/JSON) ── executor ──► registros extraídos
 <pre><code>REPEATED STRUCTURES (ranked by relevance):
 
 tr > td > div.lancamentos > table > tbody > tr
-  count: 122
-  signature: DATE | TEXT | CURRENCY | MONEY
-  examples:
-    ['28/07', 'PGTO DEBITO CONTA 6937 000000253 200211', 'R$', '-11.966,18']  # numeric-outlier
-    ['03/08', 'OBA HORTIFRUTI INDAIAT INDAIATUBA BR', 'R$', '99,97']          # representative-position
-    ...</code></pre>
-<p>O formato JSON equivalente carrega os mesmos campos (<code>path</code>, <code>count</code>, <code>signature</code>, <code>examples</code>, <code>optional_fields</code>, <code>rank_score</code>) — veja a <a href="usage.html#api">referência da API</a>.</p>
+  selector: div.lancamentos tr  # matches 154, covers all 154
+  fields:
+    data: td:nth-of-type(1)        # DATE, present in 125/154
+    transacoes: td:nth-of-type(2)  # TEXT, present in 141/154
+    moeda: td:nth-of-type(3)       # CURRENCY, present in 128/154
+    valor: td:nth-of-type(4)       # MONEY, present in 128/154
+  skip header row: ['Data', 'Transações', 'Moeda', 'Valor']
+  row types:
+    [primary] count: 122
+      signature: DATE | TEXT | CURRENCY | MONEY
+      examples:
+        ['28/07', 'PGTO DEBITO CONTA 6937 000000253 200211', 'R$', '-11.966,18']  # numeric-outlier
+        ...</code></pre>
+<p>
+  O JSON equivalente (schema 2, uma forma só para toda estrutura) carrega
+  <code>path_display</code>, <code>record_selector</code> (<code>selector</code>,
+  <code>span</code>, <code>verified</code>), <code>container</code>, <code>fields</code>
+  e <code>members</code> — veja a <a href="usage.html#api">referência da API</a> para o
+  schema completo e como executar o <code>ParserSpec</code> resultante.
+</p>
 
 </main>
 

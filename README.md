@@ -141,12 +141,21 @@ medição contra ground truth escrito à mão, não por raciocínio:
   uma entrada de glossário é `dt` + `dd`. O registro é um segmento — âncora
   mais irmãos seguintes até a próxima âncora — e a âncora é a posição do
   período com mais identidade, por isso o `dt` (que tem `id`) e não a `dd`.
+- **Um registro pode ser dividido em poucas partes (fan-out para baixo).**
+  Cada linha de conversa do WhatsApp são dois `div` sem identidade (ícone,
+  texto) *dentro* do registro — o inverso do caso acima. A família caía
+  nesses divs e a subida parava um nível cedo demais, porque "pai
+  compartilhado" também é o sinal de "cheguei ao contêiner da coleção". O
+  que separa as duas situações é o tamanho do fan-out: 46 divs colapsam em
+  23 pais de dois em dois; 154 linhas de fatura colapsam em 2 `tbody` de 77
+  em 77 — um registro se divide num punhado de partes, nunca em dezenas.
 
 Cada etapa nasceu de comportamento real observado em HTML de produção (bancos,
 catálogos de dados abertos, notícias, WhatsApp Web) e no corpus público em
-`corpus/` — sete páginas sem dado pessoal, uma por modo de falha, com
-ground truth e um teste-placar em que toda lacuna conhecida é um `xfail`
-estrito com a razão medida. Detalhamento em
+`corpus/` — 11 páginas sem dado pessoal, uma por modo de falha, com
+ground truth (incluindo valores lidos à mão da marcação) e um teste-placar em
+que toda lacuna conhecida é um `xfail` estrito com a razão medida. Detalhamento
+completo, algoritmo por algoritmo, em
 [architecture.html](https://bonafe.github.io/DOM2parser/architecture.html) e o
 raciocínio por trás de cada decisão em
 [decisions.html](https://bonafe.github.io/DOM2parser/decisions.html).
@@ -159,21 +168,26 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# rodar toda a suíte (inclui regressão contra os 6 exemplos reais em examples/)
+# rodar toda a suíte
 pytest -q
+
+# só o corpus público (roda em qualquer clone, sem dado pessoal)
+pytest -q tests/test_corpus.py
 ```
 
-A suíte de testes usa `tests/fixtures/ground_truth.yaml` como gabarito: para
-cada página real em `examples/`, anota qual seletor CSS corresponde ao
-conteúdo relevante e qual corresponde ao ruído dominante conhecido (menu,
-widget de filtro, JSON de bootstrap). `tests/test_eval_harness.py` é a suíte
-de regressão principal do projeto: verifica que o ranking sempre coloca o
-conteúdo relevante acima do ruído conhecido.
+Dois gabaritos, dois papéis. `tests/fixtures/ground_truth.yaml` cobre as 7
+páginas reais de `examples/` e valida **ranking** (`tests/test_eval_harness.py`
+garante que o conteúdo relevante sempre pontua acima do ruído dominante
+conhecido — menu, widget de filtro, JSON de bootstrap). `corpus/ground_truth.yaml`
+cobre as 11 páginas públicas e valida a **síntese do parser**
+(`tests/test_corpus.py`): seletor de registro exato, nomes derivados,
+quantidade de campos e valores lidos à mão da marcação — a única checagem que
+separa "parece certo" de "está certo".
 
 > Os arquivos em `examples/` não estão versionados neste repositório (contêm
-> capturas de páginas reais com dados pessoais) — para rodar a suíte completa
-> localmente é preciso fornecer seus próprios exemplos seguindo o formato
-> anotado em `tests/fixtures/ground_truth.yaml`.
+> capturas de páginas reais com dados pessoais) — os testes que dependem
+> deles só rodam em máquinas que os têm localmente. `corpus/` é público e
+> commitado, então `tests/test_corpus.py` roda em qualquer clone.
 
 Um CLI fino existe para inspecionar o pipeline manualmente durante o
 desenvolvimento (não é a interface principal do projeto, que é a biblioteca):

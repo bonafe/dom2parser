@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Resultados — DOM2parser</title>
-<meta name="description" content="Resultados de compressão do DOM2parser nas 6 páginas HTML reais usadas como corpus de teste.">
+<meta name="description" content="Resultados de compressão e de síntese de parser do DOM2parser nas páginas reais e no corpus público de teste.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗜️</text></svg>">
 <link rel="stylesheet" href="assets/style.css">
 </head>
@@ -28,69 +28,144 @@
 
 <h1>Resultados</h1>
 <p class="lede">
-  Medido contra 6 páginas HTML reais em <code>examples/</code> — não sintéticas —
-  cobrindo layouts de tabela legado, SPAs Vue, CKAN, Drupal, um site de notícias
-  moderno e um snapshot do WhatsApp Web.
+  Dois conjuntos: 7 páginas reais em <code>examples/</code> (com dado pessoal, só
+  local) e 11 páginas públicas em <code>corpus/</code> (commitadas, rodam em CI) — cada
+  uma do segundo grupo escolhida para exercitar um modo de falha específico.
 </p>
 
+<h2>Compressão</h2>
 <table>
   <thead>
     <tr><th>Página</th><th class="num">Original</th><th class="num">Compacto</th><th class="num">Redução</th></tr>
   </thead>
   <tbody>
-    <tr><td>Banco do Brasil (fatura de cartão)</td><td class="num">237.764</td><td class="num">7.549</td><td class="num badge-good">96,8%</td></tr>
-    <tr><td>gov.br — acervo de dados técnicos</td><td class="num">107.274</td><td class="num">11.215</td><td class="num badge-good">89,5%</td></tr>
-    <tr><td>gov.br — conjuntos de dados (CKAN)</td><td class="num">421.532</td><td class="num">11.066</td><td class="num badge-good">97,4%</td></tr>
-    <tr><td>Fiocruz — dados abertos (Drupal)</td><td class="num">277.357</td><td class="num">6.843</td><td class="num badge-good">97,5%</td></tr>
-    <tr><td>Folha de S.Paulo — DeltaFolha</td><td class="num">1.040.660</td><td class="num">27.723</td><td class="num badge-good">97,3%</td></tr>
-    <tr><td>WhatsApp Web (snapshot)</td><td class="num">1.211.832</td><td class="num">21.160</td><td class="num badge-good">98,3%</td></tr>
+    <tr><td>Banco do Brasil (fatura de cartão)</td><td class="num">237.764</td><td class="num">6.503</td><td class="num badge-good">97,3%</td></tr>
+    <tr><td>Banco do Brasil (segunda fatura)</td><td class="num">244.735</td><td class="num">3.899</td><td class="num badge-good">98,4%</td></tr>
+    <tr><td>gov.br — acervo de dados técnicos</td><td class="num">107.274</td><td class="num">4.949</td><td class="num badge-good">95,4%</td></tr>
+    <tr><td>gov.br — conjuntos de dados (CKAN)</td><td class="num">421.532</td><td class="num">7.489</td><td class="num badge-good">98,2%</td></tr>
+    <tr><td>Fiocruz — dados abertos (Drupal)</td><td class="num">277.357</td><td class="num">4.686</td><td class="num badge-good">98,3%</td></tr>
+    <tr><td>Folha de S.Paulo — DeltaFolha</td><td class="num">1.040.660</td><td class="num">7.616</td><td class="num badge-good">99,3%</td></tr>
+    <tr><td>WhatsApp Web (snapshot)</td><td class="num">1.211.832</td><td class="num">14.462</td><td class="num badge-good">98,8%</td></tr>
   </tbody>
 </table>
-<p class="lede" style="font-size:0.95rem">Caracteres; a contagem de tokens (aproximação chars/4 sem <code>tiktoken</code> instalado) acompanha a mesma proporção.</p>
+<p class="lede" style="font-size:0.95rem">Caracteres, medidos por <code>result.reduction</code> contra a representação em texto; a contagem de tokens (aproximação chars/4 sem <code>tiktoken</code> instalado) acompanha a mesma proporção.</p>
 
 <h2>Amostras de saída real</h2>
 
-<h3>Banco do Brasil — 122 transações isoladas de um layout de tabelas legado aninhadas</h3>
+<h3>Banco do Brasil — 122 transações, seletor e campos verificados</h3>
 <pre><code>tr > td > div.lancamentos > table > tbody > tr
-  count: 122
-  signature: DATE | TEXT | CURRENCY | MONEY
-  examples:
-    ['28/07', 'PGTO DEBITO CONTA 6937 000000253 200211', 'R$', '-11.966,18']  # numeric-outlier
-    ['03/08', 'OBA HORTIFRUTI INDAIAT INDAIATUBA BR', 'R$', '99,97']          # representative-position
-    ['13/06', 'ASSOCIACAO DA PARC 03/12 OURINHOS BR', 'R$', '377,91']         # numeric-outlier</code></pre>
-<p>O maior débito da fatura (<code>-11.966,18</code>) e o maior crédito aparecem automaticamente como outliers — sem precisar enviar as outras 120 linhas ao LLM.</p>
+  selector: div.lancamentos tr  # matches 154, covers all 154
+  fields:
+    data: td:nth-of-type(1)        # DATE, present in 125/154
+    transacoes: td:nth-of-type(2)  # TEXT, present in 141/154
+    moeda: td:nth-of-type(3)       # CURRENCY, present in 128/154
+    valor: td:nth-of-type(4)       # MONEY, present in 128/154
+  skip header row: ['Data', 'Transações', 'Moeda', 'Valor']
+  row types:
+    [primary] count: 122
+      signature: DATE | TEXT | CURRENCY | MONEY
+      examples:
+        ['28/07', 'PGTO DEBITO CONTA 6937 000000253 200211', 'R$', '-11.966,18']  # numeric-outlier
+        ['03/08', 'OBA HORTIFRUTI INDAIAT INDAIATUBA BR', 'R$', '99,97']          # representative-position</code></pre>
+<p>
+  Os quatro nomes de campo (<code>data</code>, <code>transacoes</code>, <code>moeda</code>,
+  <code>valor</code>) foram lidos da própria linha de cabeçalho da fatura, não
+  inventados. O maior débito (<code>-11.966,18</code>) aparece automaticamente como
+  outlier na amostra.
+</p>
 
-<h3>Fiocruz (Drupal) — 11 recursos de dataset, campo sempre-vazio preservado como sinal</h3>
-<pre><code>div.region.region-content > ... > div.view-content > div.views-row
-  count: 11
-  signature: TEXT | EMPTY | TEXT
+<h3>Fiocruz (Drupal) — 12 recursos de dataset, campo sempre-vazio preservado como sinal</h3>
+<pre><code>div.views-row  # matches 12, covers all 12
   examples:
     ['Processos (2016 a 2018) CSV', '', 'Download do dicionário de dados']
-    ['Bolsistas (CSV)', '', 'Download do dicionário de dados']
-    ['Patrimônio (CSV)', '', 'Download do dicionário de dados']</code></pre>
+    ['Bolsistas (CSV)', '', 'Download do dicionário de dados']</code></pre>
 
-<h3>CKAN (gov.br) — mesma classe CSS, tipos de conteúdo diferentes, corretamente distinguidos</h3>
-<pre><code>div > div.container-lg > ... > div.container.my-2.search-result > a > div.conjuto-dados.row
-  count: 2
-  signature: EMPTY | TEXT | FILE_FORMAT | COUNT_LABELED
-  examples:
-    ['', 'Bilheteria da Funarte Por FUNARTE - Fundação Nacional de Artes...',
-     'CSV', '1 Recursos0 Reusos209 Downloads0 Seguidores']</code></pre>
+<h3>WhatsApp Web — fan-out para baixo resolvido (ADR-012)</h3>
+<pre><code>div[data-testid="cell-frame-container"]  # matches 23, covers all 23</code></pre>
+<p>
+  Cada linha de conversa é internamente dois <code>div</code> sem identidade própria
+  (ícone, texto) — sem a regra de subida por fan-out pequeno (<a href="architecture.html#parser">ver arquitetura</a>),
+  a promoção parava um nível abaixo e o seletor sintetizado cobria 46 elementos em vez
+  dos 23 registros reais.
+</p>
+
+<h2 id="corpus">Corpus público — um modo de falha por página</h2>
+<p>
+  As 11 páginas em <code>corpus/</code> não foram escolhidas por site: cada uma
+  exercita um comportamento específico que uma página só não expõe. O seletor de
+  registro sintetizado bate exatamente com o conjunto de elementos anotado à mão em
+  <code>ground_truth.yaml</code> (ou é um invólucro 1:1 dele, marcado abaixo).
+</p>
+<table>
+  <thead><tr><th>Página</th><th>Modo de falha</th><th>Seletor sintetizado</th><th class="num">n</th><th class="num">campos</th></tr></thead>
+  <tbody>
+    <tr><td>Wikipédia — população</td><td>75% dos elementos com id gerado (Parsoid)</td><td><code>table.col1left tr</code></td><td class="num">242</td><td class="num">9</td></tr>
+    <tr><td>Wikipédia — sedes olímpicas</td><td><code>rowspan</code>; 4 tabelas irmãs de classes idênticas</td><td><code>section:nth-of-type(1) tr</code></td><td class="num">65</td><td class="num">16</td></tr>
+    <tr><td>IANA — status HTTP</td><td><code>thead</code>/<code>th</code> de verdade</td><td><code>table.sortable &gt; tbody &gt; tr</code></td><td class="num">75</td><td class="num">4</td></tr>
+    <tr><td>Hacker News</td><td>fan-out lateral: 3 <code>&lt;tr&gt;</code> por item</td><td><code>tr.athing</code> (<code>span: 3</code>)</td><td class="num">30</td><td class="num">17</td></tr>
+    <tr><td>Glossário Python</td><td>fan-out lateral: <code>dt</code>+<code>dd</code>, termos partilhando definição</td><td><code>div.body dt</code> (<code>span: 2</code>)</td><td class="num">177</td><td class="num">12</td></tr>
+    <tr><td>Índice da biblioteca Python</td><td>lista hierárquica, sublista ausente em parte dos itens</td><td><code>li.toctree-l1</code></td><td class="num">40</td><td class="num">20</td></tr>
+    <tr><td>Books to Scrape</td><td>preço com símbolo; título truncado só no texto visível</td><td><code>article.product_pod</code></td><td class="num">20</td><td class="num">6</td></tr>
+    <tr><td>Quotes to Scrape</td><td><code>itemprop</code>; lista de tags aninhada por registro</td><td><code>div.quote</code></td><td class="num">10</td><td class="num">11</td></tr>
+    <tr><td>data.gov — datasets</td><td>invólucro só com classes utilitárias (USWDS)</td><td><code>ul.usa-collection &gt; li</code> <em>(invólucro 1:1)</em></td><td class="num">20</td><td class="num">13</td></tr>
+    <tr><td>gov.br — notícias</td><td><code>aria-label</code> por instância (quase virou nome de campo)</td><td><code>li.noticia</code></td><td class="num">8</td><td class="num">5</td></tr>
+    <tr><td>GitHub Topics</td><td>zero classe semântica — só utilitárias do Primer</td><td><code>div.container-lg &gt; div &gt; div &gt; div</code></td><td class="num">16</td><td class="num">7</td></tr>
+  </tbody>
+</table>
+<p>
+  <code>ul.usa-collection &gt; li</code> não é o mesmo conjunto de elementos que
+  <code>div.dataset-content</code> (o anotado no ground truth) — é o invólucro que o
+  contém 1 para 1. Os dois nomeiam o mesmo registro; <code>test_corpus.py</code> aceita
+  qualquer um dos dois, porque insistir no elemento exato fixaria uma escolha de
+  implementação, não a resposta.
+</p>
+<div class="callout">
+  Todas as 43 verificações do corpus (registro, nomes, quantidade de campos, valores
+  lidos à mão) passam — <code>pytest -q tests/test_corpus.py</code>. Nenhuma lacuna
+  segue declarada como <code>xfail</code>. Ver <a href="architecture.html#corpus">como o
+  corpus é estruturado</a> e <a href="decisions.html">o histórico de decisões</a> por
+  trás de cada regra que ele forçou.
+</div>
+
+<h2>Síntese do parser — visão geral</h2>
+<table>
+  <thead><tr><th>Conjunto</th><th class="num">Páginas</th><th class="num">Registros emitidos</th><th class="num">Falhas declaradas</th></tr></thead>
+  <tbody>
+    <tr><td><code>examples/</code></td><td class="num">7</td><td class="num">23</td><td class="num">4</td></tr>
+    <tr><td><code>corpus/</code></td><td class="num">11</td><td class="num">31</td><td class="num">4</td></tr>
+  </tbody>
+</table>
+<p>
+  Todo registro emitido tem precisão <strong>e</strong> recall 1.0 contra o documento
+  original — é o critério de aceitação, não uma média a se aproximar (ver
+  <a href="architecture.html#parser">como a síntese decide</a>). As oito falhas
+  declaradas são estruturas cujo melhor candidato casava elementos a mais sem que
+  houvesse regra de conteúdo explicando a sobra — viram <code>failures</code> com os
+  quase-acertos medidos, nunca um registro emitido pela metade.
+</p>
 
 <h2>Limitações conhecidas</h2>
 <div class="callout warn">
-  O ranking de relevância (a etapa mais heurística do pipeline) foi validado apenas
-  contra estas 6 páginas. Em <code>folhadesp.html</code>, o cluster da lista principal
-  de notícias (106 itens) fica em <strong>3º lugar</strong> no ranking final, não em
-  1º — os dois clusters à frente também são estruturalmente legítimos, apenas menos
-  centrais ao conteúdo da página. Isso é esperado e documentado em
-  <a href="decisions.html">decisões de arquitetura</a>: pesos de ranking devem evoluir
-  à medida que mais páginas reais forem testadas.
+  O ranking de relevância (a etapa mais heurística do pipeline) continua sendo a parte
+  menos exata do sistema. Em <code>folhadesp.html</code>, o cluster da lista principal
+  de notícias (100 manchetes) ocupa a <strong>4ª posição</strong> entre as 5 estruturas
+  selecionadas — não a 1ª — mesmo depois da correção que uniu as manchetes visíveis e as
+  paginadas numa família só (ver <a href="decisions.html">ADR sobre classes de
+  estado</a>). Isso é inofensivo no comportamento padrão (<code>max_clusters=10</code> é
+  maior que as 5 estruturas da página, então a 4ª posição ainda entra na saída), mas é
+  honesto registrar: o score de relevância não coloca essa estrutura no topo por si só.
+  Pesos de ranking devem evoluir à medida que mais páginas reais forem testadas.
+</div>
+<div class="callout warn">
+  A síntese de seletor tem custo real em páginas grandes com muitos ids/classes
+  candidatos — a Wikipédia (7699 ids, ~10 mil elementos) leva alguns segundos por
+  família. Aceitável para uso em lote; não é instantâneo.
 </div>
 <div class="callout">
   Todas as métricas acima vêm da suíte de testes automatizada
-  (<code>tests/test_eval_harness.py</code>) rodada contra os arquivos reais em
-  <code>examples/</code> — reproduza com <code>pytest -q</code> após clonar o repositório.
+  (<code>tests/test_eval_harness.py</code> para ranking, <code>tests/test_corpus.py</code>
+  para síntese de parser) rodada contra os arquivos reais em <code>examples/</code> e
+  <code>corpus/</code> — reproduza com <code>pytest -q</code> após clonar o repositório.
 </div>
 
 </main>

@@ -348,50 +348,6 @@
 </p>
 </div>
 
-<div class="adr" id="adr-012">
-<h3>ADR-012 — Fan-out para baixo: subir um pai compartilhado quando o registro está dividido em poucas partes <span class="status">Aceita</span></h3>
-<h4>Contexto</h4>
-<p>
-  A regra de promoção era "sobe enquanto cada elemento tem pai próprio": pai
-  compartilhado significa que se chegou ao contêiner da coleção, e o nível de baixo é o
-  registro. O mesmo sinal, porém, marca a situação oposta — a família aterrissou nas
-  <em>partes</em> de um registro. Cada linha de conversa do WhatsApp é um
-  <code>div[data-testid="cell-frame-container"]</code> com dois <code>div</code> filhos
-  sem identidade (ícone e texto); a família caía nos 46 filhos e a subida não começava,
-  parando exatamente um nível abaixo do registro.
-</p>
-<h4>Decisão</h4>
-<p>
-  O que separa as duas situações é o <strong>tamanho do fan-out</strong>: 46 filhos
-  colapsam em 23 pais de dois em dois; as 154 linhas de uma fatura colapsam em 2
-  <code>tbody</code> de 77 em 77. Um registro se divide num punhado de partes, nunca em
-  dezenas. Pai compartilhado passa a ser subido quando nenhum pai concentra mais de
-  <code>MAX_PARTS</code> (4) dos elementos atuais <em>e</em> os pais ainda formam uma
-  coleção (<code>MIN_FANOUT_PARENTS</code>, 3) — dois pais são um par de tabelas
-  pequenas, não uma coleção, e uma página com duas tabelas de três linhas precisa
-  continuar devolvendo linhas. O limite 4 é o mesmo <code>MAX_SPAN</code> do fan-out
-  lateral, visto do outro lado.
-</p>
-<p>
-  Junto entrou uma correção no fecho: <code>data-testid</code> é marcador de tipo de
-  componente e vale o mesmo onde quer que o componente esteja montado, então
-  localização não o divide. O WhatsApp renderiza 22 linhas dentro da lista virtualizada e
-  a de "conversas trancadas" fora dela; todas as 23 são
-  <code>cell-frame-container</code>, e o seletor que um humano escreve diz exatamente
-  isso. Identidade por classe continua exigindo localização igual
-  (<code>div.limites &gt; div.textoItem</code> e <code>div.totalFatura &gt; div.textoItem</code>
-  são lugares diferentes).
-</p>
-<h4>Consequências</h4>
-<p>
-  As sete fixtures reais e as onze páginas do corpus passam a ter seletor de registro
-  exato contra o ground truth escrito à mão — nenhuma limitação declarada resta. Os testes
-  de promoção passaram a re-fechar cada nível antes de comparar, que é o que o
-  <code>build</code> sempre fez: subir pode aterrissar num nível que a semente não cobria
-  inteiro.
-</p>
-</div>
-
 <div class="adr" id="adr-011">
 <h3>ADR-011 — Id gerado nunca ancora seletor; nome de campo precisa ser constante <span class="status">Aceita</span></h3>
 <h4>Contexto</h4>
@@ -446,14 +402,60 @@
 </p>
 </div>
 
+<div class="adr" id="adr-012">
+<h3>ADR-012 — Fan-out para baixo: subir um pai compartilhado quando o registro está dividido em poucas partes <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  A regra de promoção era "sobe enquanto cada elemento tem pai próprio": pai
+  compartilhado significa que se chegou ao contêiner da coleção, e o nível de baixo é o
+  registro. O mesmo sinal, porém, marca a situação oposta — a família aterrissou nas
+  <em>partes</em> de um registro. Cada linha de conversa do WhatsApp é um
+  <code>div[data-testid="cell-frame-container"]</code> com dois <code>div</code> filhos
+  sem identidade (ícone e texto); a família caía nos 46 filhos e a subida não começava,
+  parando exatamente um nível abaixo do registro.
+</p>
+<h4>Decisão</h4>
+<p>
+  O que separa as duas situações é o <strong>tamanho do fan-out</strong>: 46 filhos
+  colapsam em 23 pais de dois em dois; as 154 linhas de uma fatura colapsam em 2
+  <code>tbody</code> de 77 em 77. Um registro se divide num punhado de partes, nunca em
+  dezenas. Pai compartilhado passa a ser subido quando nenhum pai concentra mais de
+  <code>MAX_PARTS</code> (4) dos elementos atuais <em>e</em> os pais ainda formam uma
+  coleção (<code>MIN_FANOUT_PARENTS</code>, 3) — dois pais são um par de tabelas
+  pequenas, não uma coleção, e uma página com duas tabelas de três linhas precisa
+  continuar devolvendo linhas. O limite 4 é o mesmo <code>MAX_SPAN</code> do fan-out
+  lateral, visto do outro lado.
+</p>
+<p>
+  Junto entrou uma correção no fecho: <code>data-testid</code> é marcador de tipo de
+  componente e vale o mesmo onde quer que o componente esteja montado, então
+  localização não o divide. O WhatsApp renderiza 22 linhas dentro da lista virtualizada e
+  a de "conversas trancadas" fora dela; todas as 23 são
+  <code>cell-frame-container</code>, e o seletor que um humano escreve diz exatamente
+  isso. Identidade por classe continua exigindo localização igual
+  (<code>div.limites &gt; div.textoItem</code> e <code>div.totalFatura &gt; div.textoItem</code>
+  são lugares diferentes).
+</p>
+<h4>Consequências</h4>
+<p>
+  As sete fixtures reais e as onze páginas do corpus passam a ter seletor de registro
+  exato contra o ground truth escrito à mão — nenhuma limitação declarada resta. Os testes
+  de promoção passaram a re-fechar cada nível antes de comparar, que é o que o
+  <code>build</code> sempre fez: subir pode aterrissar num nível que a semente não cobria
+  inteiro.
+</p>
+</div>
+
 <hr>
 <p class="callout warn">
   <strong>Risco conhecido e aceito:</strong> o ranking de relevância (ADR-003, ADR-004)
-  é heurístico por natureza e foi validado contra apenas 6 páginas reais. Em
-  <code>folhadesp.html</code>, por exemplo, o cluster da lista principal de notícias
-  (106 itens) aparece em 3º lugar no ranking final, não em 1º — os dois clusters à
-  frente são estruturalmente válidos mas menos centrais ao conteúdo da página. Ajustar
-  os pesos do score deve ser esperado à medida que mais páginas reais forem testadas.
+  continua heurístico por natureza. Em <code>folhadesp.html</code>, o cluster das 100
+  manchetes ocupa a 4ª posição entre as 5 estruturas selecionadas, não a 1ª — mesmo
+  depois da correção de classe de estado (ADR acima) que uniu as manchetes visíveis e
+  as paginadas numa família só. Inofensivo hoje (o padrão <code>max_clusters=10</code>
+  inclui as 5), mas os pesos do score não colocam essa estrutura no topo por si só.
+  Números atualizados e o corpus público que os mede ficam em
+  <a href="benchmarks.html">resultados</a>.
 </p>
 
 </main>

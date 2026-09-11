@@ -33,6 +33,7 @@ location would get silently misfiled into another location's family.
 
 from __future__ import annotations
 
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
@@ -104,6 +105,27 @@ def _pick_primary(members: list[ClusterScore]) -> ClusterScore:
     return max(members, key=informativeness)
 
 
+_DIGIT_RUN_RE = re.compile(r"\d+")
+
+
+def _normalized_location(el) -> str:
+    """A location key for grouping purposes -- like `describe_path`, but
+    with embedded digit runs in an ancestor's id/class/testid replaced by
+    a placeholder, so a virtualized list's per-instance enumeration
+    (`data-testid="list-item-0"`, `"list-item-1"`, ...) or a numeric DB id
+    isn't mistaken for a genuinely different NAMED location the way
+    `div.limites` vs `div.totalFatura` needs to be. Verified on
+    oss_gov_br_whatsapp.html: grouping by raw `describe_path()` shattered
+    the page's 23 real chat-list rows (`div[data-testid=
+    "cell-frame-container"]`, a ground-truth-documented repeated
+    structure) into 23 singleton, one-per-index groups -- entirely
+    dropping a real repeated structure because its immediate wrapper's
+    only per-instance identity is that list-position index, not a
+    semantic difference in kind. Only used to decide grouping; the actual
+    (unnormalized) path is still what gets displayed."""
+    return _DIGIT_RUN_RE.sub("#", describe_path(el))
+
+
 def _split_by_true_path(cs: ClusterScore) -> list[ClusterScore]:
     """`cluster_siblings()` groups elements by DOM fingerprint + content
     signature alone -- it has no notion of "true ancestor location", so a
@@ -116,15 +138,15 @@ def _split_by_true_path(cs: ClusterScore) -> list[ClusterScore]:
     outer-table row). Trusting `elements[0]`'s path for the whole cluster
     (as `_family_key` does) would then silently misfile the *other*
     elements into the wrong family. Split any such heterogeneous cluster
-    into one homogeneous piece per true path, re-scored so each piece can
-    be ranked/selected on its own honest merits."""
+    into one homogeneous piece per true (normalized) location, re-scored
+    so each piece can be ranked/selected on its own honest merits."""
     cluster = cs.cluster
     if not cluster.elements:
         return [cs]
 
     groups: dict[str, list] = defaultdict(list)
     for el in cluster.elements:
-        groups[describe_path(el)].append(el)
+        groups[_normalized_location(el)].append(el)
     if len(groups) == 1:
         return [cs]
 
@@ -183,13 +205,15 @@ def _family_key(cs: ClusterScore) -> tuple:
     but sitting under DIFFERENT, differently-classed parents (e.g.
     `div.limites > div.textoItem` vs `div.totalFatura > div.textoItem`)
     can collide on `structural_key` while being unrelated locations on the
-    page. `describe_path` walks the true DOM ancestor chain (including
-    parent class/id), so requiring it to match too rules out that false
-    merge while still uniting genuine same-slot variants (verified: on
-    bancodobrasil.html, the transaction/section/summary/empty row variants
-    of `tr > td > div.lancamentos > table > tbody > tr` all render the
-    identical path string)."""
-    path = describe_path(cs.cluster.elements[0]) if cs.cluster.elements else None
+    page. `_normalized_location` walks the true DOM ancestor chain
+    (including parent class/id), so requiring it to match too rules out
+    that false merge while still uniting genuine same-slot variants
+    (verified: on bancodobrasil.html, the transaction/section/summary/
+    empty row variants of `tr > td > div.lancamentos > table > tbody >
+    tr` all render the identical path string) -- and normalizing embedded
+    digits keeps a virtualized list's per-instance index (see
+    `_normalized_location`) from being mistaken for such a difference."""
+    path = _normalized_location(cs.cluster.elements[0]) if cs.cluster.elements else None
     return (cs.cluster.structural_key, path)
 
 
@@ -215,8 +239,8 @@ def _is_homogeneous_location(cluster: Cluster) -> bool:
     about the cluster as a whole."""
     if not cluster.elements:
         return True
-    first_path = describe_path(cluster.elements[0])
-    return all(describe_path(el) == first_path for el in cluster.elements[1:])
+    first_path = _normalized_location(cluster.elements[0])
+    return all(_normalized_location(el) == first_path for el in cluster.elements[1:])
 
 
 def _find_container(

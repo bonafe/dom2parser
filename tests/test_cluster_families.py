@@ -17,14 +17,14 @@ from pathlib import Path
 
 from lxml import etree
 
-from dom2parser.cluster.families import build_families
+from dom2parser.cluster.families import _resolve_by_true_path, build_families
 from dom2parser.cluster.rank import rank_clusters, select_top_level_clusters
 from dom2parser.cluster.roles import ROLE_PRIMARY, ROLE_SECTION, ROLE_SUMMARY, ROLE_VARIANT
-from dom2parser.cluster.siblings import cluster_siblings
+from dom2parser.cluster.siblings import Cluster, cluster_siblings
 from dom2parser.compact.paths import describe_path
 from dom2parser.fingerprint.hashattrs import find_uniform_build_artifact_attrs
 from dom2parser.fingerprint.structural import filter_meaningful_candidates
-from dom2parser.html_io import load_html_file
+from dom2parser.html_io import load_html_file, parse_html
 from dom2parser.sanitize import full_sanitize
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
@@ -158,3 +158,32 @@ def test_family_member_is_never_absorbed_as_another_familys_container():
     family = _transaction_family(families)
     assert family is not None, "the transaction family must survive, not be deleted via container absorption"
     assert any(m.cluster.content_signature == ("TEXT", "TEXT", "TEXT", "TEXT") for m in family.members)
+
+
+def test_virtualized_list_per_instance_index_does_not_shatter_the_cluster():
+    # oss_gov_br_whatsapp.html: 23 real chat-list rows
+    # (div[data-testid="cell-frame-container"]) each sit under a wrapper
+    # carrying a UNIQUE data-testid="list-item-N" (a virtualized list's
+    # per-instance position index, e.g. "list-item-0" .. "list-item-21").
+    # Splitting by raw (unnormalized) ancestor path treated each one as a
+    # different "true location" and shattered the cluster into 23
+    # singleton pieces -- all below the min-cluster-size-2 threshold --
+    # silently deleting a real, ground-truth-documented repeated
+    # structure entirely. Reproduced here with minimal synthetic HTML so
+    # the fix doesn't depend on the large real fixture.
+    html = "<html><body><div id='list'>" + "".join(
+        f'<div data-testid="list-item-{i}"><div class="row"><span>{i}</span><span>x</span></div></div>'
+        for i in range(5)
+    ) + "</div></body></html>"
+    root = parse_html(html)
+    rows = root.xpath("//div[@class='row']")
+    assert len(rows) == 5
+
+    cluster = Cluster(
+        structural_key=("div", ("class", ("row",))),
+        content_signature=("INTEGER", "TEXT"),
+        elements=rows,
+    )
+    resolved, _ = _resolve_by_true_path([rank_clusters([cluster])[0]])
+    assert len(resolved) == 1, "a per-instance list index must not fragment a genuinely repeated structure"
+    assert resolved[0].cluster.count == 5

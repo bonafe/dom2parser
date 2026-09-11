@@ -18,6 +18,8 @@ from collections import defaultdict
 
 from lxml import etree
 
+from ..anchor import UID_ATTR
+
 DEFAULT_MIN_SERIALIZED_LEN = 40
 # Deliberately high: a byte-identical subtree can be a real data record with
 # constant content (e.g. 28 identical "Acessar o recurso" download buttons in
@@ -34,7 +36,17 @@ DEFAULT_MIN_COUNT = 50
 
 
 def _serialize(el: etree._Element) -> bytes:
-    return etree.tostring(el, method="html", with_tail=False)
+    """Serialize a subtree for hashing, ignoring `anchor.UID_ATTR`.
+
+    That attribute is unique per element by construction, so leaving it in
+    would make every subtree unique and silently reduce this stage to a
+    no-op (measured on folhadesp.html: 1520 removed elements -> 0)."""
+    stamped = [(d, d.attrib.pop(UID_ATTR)) for d in el.iter(etree.Element) if UID_ATTR in d.attrib]
+    try:
+        return etree.tostring(el, method="html", with_tail=False)
+    finally:
+        for d, uid in stamped:
+            d.set(UID_ATTR, uid)
 
 
 def dedup_identical_subtrees(

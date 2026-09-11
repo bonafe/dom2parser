@@ -144,6 +144,20 @@ def looks_like_state_class_token(token: str) -> bool:
     return lowered in _STATE_CLASS_WORDS or bool(_STATE_CLASS_PREFIX_RE.match(token))
 
 
+def discriminating_class_tokens(class_attr_value: str) -> tuple[str, ...]:
+    """Tokens usable to tell two groups of elements APART, which is not the
+    same question as what an element is.
+
+    A state class is deliberately excluded from identity (see
+    `looks_like_state_class_token`) precisely because two elements that
+    differ only by it are the same kind of thing. But that makes it the
+    ideal thing to *subtract* with when one group has it and the other does
+    not -- `li.item:not(.is-hidden)`. Only generated-looking tokens are
+    dropped here, since those discriminate nothing."""
+    tokens = (class_attr_value or "").split()
+    return tuple(sorted(t for t in tokens if t and not looks_like_atomic_class_token(t)))
+
+
 def semantic_class_tokens(class_attr_value: str) -> tuple[str, ...]:
     """The subset of a `class` attribute's tokens considered safe identity
     signals: real class names that are neither generated-looking nor a

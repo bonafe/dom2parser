@@ -31,10 +31,22 @@ def _fingerprints_for(filename, selector):
 
 @pytest.mark.parametrize(
     "token",
-    ["x78zum5", "x1n2onr6", "xh8yej3", "x5yr21d", "x10wlt62"],
+    [
+        "x78zum5", "x1n2onr6", "xh8yej3", "x5yr21d", "x10wlt62",
+        # digit-free / vowel-rich Stylex hashes (oss_gov_br_whatsapp.html)
+        "xeuugli", "xelbjmh", "xahtqtb", "x1liijdw", "x7coems",
+        # React's `className={cond && "foo"}` rendered as a literal
+        "false", "true", "undefined",
+    ],
 )
 def test_stylex_atomic_classes_are_detected(token):
     assert looks_like_atomic_class_token(token)
+
+
+def test_known_false_positive_x_prefixed_short_semantic_class_documented():
+    """Documented limitation of the Stylex shape rule (`x` + 5-8 alnum):
+    a real size modifier like `xlarge` is flagged as atomic too."""
+    assert looks_like_atomic_class_token("xlarge")
 
 
 @pytest.mark.parametrize(

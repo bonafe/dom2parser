@@ -33,11 +33,10 @@ location would get silently misfiled into another location's family.
 
 from __future__ import annotations
 
-import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 
-from ..compact.paths import describe_path
+from ..compact.paths import describe_path, location_key
 from ..dom_utils import direct_children_text
 from . import roles
 from .rank import ClusterScore, is_rich_signature, score_cluster
@@ -105,28 +104,7 @@ def _pick_primary(members: list[ClusterScore]) -> ClusterScore:
     return max(members, key=informativeness)
 
 
-_DIGIT_RUN_RE = re.compile(r"\d+")
-
-
-def _normalized_location(el) -> str:
-    """A location key for grouping purposes -- like `describe_path`, but
-    with embedded digit runs in an ancestor's id/class/testid replaced by
-    a placeholder, so a virtualized list's per-instance enumeration
-    (`data-testid="list-item-0"`, `"list-item-1"`, ...) or a numeric DB id
-    isn't mistaken for a genuinely different NAMED location the way
-    `div.limites` vs `div.totalFatura` needs to be. Verified on
-    oss_gov_br_whatsapp.html: grouping by raw `describe_path()` shattered
-    the page's 23 real chat-list rows (`div[data-testid=
-    "cell-frame-container"]`, a ground-truth-documented repeated
-    structure) into 23 singleton, one-per-index groups -- entirely
-    dropping a real repeated structure because its immediate wrapper's
-    only per-instance identity is that list-position index, not a
-    semantic difference in kind. Only used to decide grouping; the actual
-    (unnormalized) path is still what gets displayed."""
-    return _DIGIT_RUN_RE.sub("#", describe_path(el))
-
-
-def _split_by_true_path(cs: ClusterScore) -> list[ClusterScore]:
+def _split_by_true_path(cs: ClusterScore, cache: dict) -> list[ClusterScore]:
     """`cluster_siblings()` groups elements by DOM fingerprint + content
     signature alone -- it has no notion of "true ancestor location", so a
     single `Cluster` can already contain elements from two genuinely
@@ -138,15 +116,17 @@ def _split_by_true_path(cs: ClusterScore) -> list[ClusterScore]:
     outer-table row). Trusting `elements[0]`'s path for the whole cluster
     (as `_family_key` does) would then silently misfile the *other*
     elements into the wrong family. Split any such heterogeneous cluster
-    into one homogeneous piece per true (normalized) location, re-scored
+    into one homogeneous piece per true location (`location_key`, which
+    already masks per-instance ids/testids so a virtualized list's
+    `list-item-N` wrappers don't count as N different places), re-scored
     so each piece can be ranked/selected on its own honest merits."""
     cluster = cs.cluster
     if not cluster.elements:
         return [cs]
 
-    groups: dict[str, list] = defaultdict(list)
+    groups: dict[tuple, list] = defaultdict(list)
     for el in cluster.elements:
-        groups[_normalized_location(el)].append(el)
+        groups[location_key(el, cache=cache)].append(el)
     if len(groups) == 1:
         return [cs]
 
@@ -161,7 +141,7 @@ def _split_by_true_path(cs: ClusterScore) -> list[ClusterScore]:
     return pieces
 
 
-def _resolve_by_true_path(scored: list[ClusterScore]) -> tuple[list[ClusterScore], dict]:
+def _resolve_by_true_path(scored: list[ClusterScore], cache: dict | None = None) -> tuple[list[ClusterScore], dict]:
     """Split every cluster in `scored` at most once, returning both the
     flat resolved list and a map from each original cluster's `id()` to
     its resolved pieces -- so a caller holding a second list that shares
@@ -169,16 +149,18 @@ def _resolve_by_true_path(scored: list[ClusterScore]) -> tuple[list[ClusterScore
     `ranked` by identity) can look up the SAME piece objects instead of
     re-splitting and getting fresh, differently-identified duplicates for
     what is really the same homogeneous group."""
+    if cache is None:
+        cache = {}
     resolved: list[ClusterScore] = []
     origin: dict[int, list[ClusterScore]] = {}
     for cs in scored:
-        pieces = [p for p in _split_by_true_path(cs) if p.cluster.count >= MIN_RESOLVED_CLUSTER_SIZE]
+        pieces = [p for p in _split_by_true_path(cs, cache) if p.cluster.count >= MIN_RESOLVED_CLUSTER_SIZE]
         origin[id(cs)] = pieces
         resolved.extend(pieces)
     return resolved, origin
 
 
-def _resolve_selected(selected: list[ClusterScore], origin: dict) -> list[ClusterScore]:
+def _resolve_selected(selected: list[ClusterScore], origin: dict, cache: dict) -> list[ClusterScore]:
     resolved = []
     seen_ids = set()
     for cs in selected:
@@ -186,7 +168,7 @@ def _resolve_selected(selected: list[ClusterScore], origin: dict) -> list[Cluste
         if pieces is None:
             # Defensive fallback -- shouldn't happen in practice, since
             # `selected` is always a sub-list of `ranked` by identity.
-            pieces = [p for p in _split_by_true_path(cs) if p.cluster.count >= MIN_RESOLVED_CLUSTER_SIZE]
+            pieces = [p for p in _split_by_true_path(cs, cache) if p.cluster.count >= MIN_RESOLVED_CLUSTER_SIZE]
         for piece in pieces:
             if id(piece) not in seen_ids:
                 seen_ids.add(id(piece))
@@ -194,7 +176,7 @@ def _resolve_selected(selected: list[ClusterScore], origin: dict) -> list[Cluste
     return resolved
 
 
-def _family_key(cs: ClusterScore) -> tuple:
+def _family_key(cs: ClusterScore, cache: dict) -> tuple:
     """Two clusters belong to the same family when they share both a DOM
     fingerprint (`structural_key` -- tolerant of optional/missing fields,
     see cluster.siblings) AND the same rendered ancestor path. The
@@ -205,26 +187,39 @@ def _family_key(cs: ClusterScore) -> tuple:
     but sitting under DIFFERENT, differently-classed parents (e.g.
     `div.limites > div.textoItem` vs `div.totalFatura > div.textoItem`)
     can collide on `structural_key` while being unrelated locations on the
-    page. `_normalized_location` walks the true DOM ancestor chain
-    (including parent class/id), so requiring it to match too rules out
-    that false merge while still uniting genuine same-slot variants
-    (verified: on bancodobrasil.html, the transaction/section/summary/
-    empty row variants of `tr > td > div.lancamentos > table > tbody >
-    tr` all render the identical path string) -- and normalizing embedded
-    digits keeps a virtualized list's per-instance index (see
-    `_normalized_location`) from being mistaken for such a difference."""
-    path = _normalized_location(cs.cluster.elements[0]) if cs.cluster.elements else None
-    return (cs.cluster.structural_key, path)
+    page. `location_key` walks the true DOM ancestor chain (including
+    parent class/id), so requiring it to match too rules out that false
+    merge while still uniting genuine same-slot variants (verified: on
+    bancodobrasil.html, the transaction/section/summary/empty row variants
+    of `tr > td > div.lancamentos > table > tbody > tr` all render the
+    identical path) -- and its masking of per-instance ids/testids keeps a
+    virtualized list's position index from being mistaken for such a
+    difference.
+
+    When the fingerprint has NO identity signal at all (`("shape",)`,
+    every class filtered as atomic), `fingerprint_key` had to fall back to
+    the exact children-tag tuple, so a row with one optional extra child
+    (oss_gov_br_whatsapp.html: 4 chat rows carrying an unread-count badge
+    `div` next to the 17 that don't) lands in a different
+    `structural_key`. Here the identical true location supplies the
+    identity the fingerprint lacked, so the children tuple is dropped from
+    the key and that variant joins its family instead of duplicating it
+    under the same displayed path."""
+    structural = cs.cluster.structural_key
+    if len(structural) > 2 and structural[1] == ("shape",):
+        structural = structural[:2]
+    path = location_key(cs.cluster.elements[0], cache=cache) if cs.cluster.elements else None
+    return (structural, path)
 
 
-def _group_by_family_key(scored: list[ClusterScore]) -> dict[tuple, list[ClusterScore]]:
+def _group_by_family_key(scored: list[ClusterScore], cache: dict) -> dict[tuple, list[ClusterScore]]:
     groups: dict[tuple, list[ClusterScore]] = {}
     for cs in scored:
-        groups.setdefault(_family_key(cs), []).append(cs)
+        groups.setdefault(_family_key(cs, cache), []).append(cs)
     return groups
 
 
-def _is_homogeneous_location(cluster: Cluster) -> bool:
+def _is_homogeneous_location(cluster: Cluster, cache: dict) -> bool:
     """True if every element of `cluster` shares the same true ancestor
     path. `cluster_siblings()` groups purely by DOM fingerprint + content
     signature, which (like `_family_key`'s docstring above) can conflate
@@ -239,8 +234,8 @@ def _is_homogeneous_location(cluster: Cluster) -> bool:
     about the cluster as a whole."""
     if not cluster.elements:
         return True
-    first_path = _normalized_location(cluster.elements[0])
-    return all(_normalized_location(el) == first_path for el in cluster.elements[1:])
+    first_path = location_key(cluster.elements[0], cache=cache)
+    return all(location_key(el, cache=cache) == first_path for el in cluster.elements[1:])
 
 
 def _find_container(
@@ -248,6 +243,7 @@ def _find_container(
     ranked: list[ClusterScore],
     family_key: tuple,
     excluded_keys: set,
+    cache: dict,
 ) -> ClusterScore | None:
     """A container is another cluster (different DOM shape) that most
     closely wraps this family's elements -- e.g. `div.lancamentos`
@@ -278,10 +274,10 @@ def _find_container(
 
     candidates = [
         cs for cs in ranked
-        if _family_key(cs) != family_key
-        and _family_key(cs) not in excluded_keys
+        if _family_key(cs, cache) != family_key
+        and _family_key(cs, cache) not in excluded_keys
         and not is_rich_signature(cs.cluster.content_signature)
-        and _is_homogeneous_location(cs.cluster)
+        and _is_homogeneous_location(cs.cluster, cache)
     ]
     if not candidates:
         return None
@@ -331,17 +327,18 @@ def build_families(
     sharing object identity for their common pieces -- otherwise the same
     homogeneous piece would be split twice into two different objects and
     wrongly appear as its own "extra" duplicate of itself."""
-    ranked, origin = _resolve_by_true_path(ranked)
-    selected = _resolve_selected(selected, origin)
+    cache: dict = {}
+    ranked, origin = _resolve_by_true_path(ranked, cache)
+    selected = _resolve_selected(selected, origin, cache)
 
-    selected_by_key = _group_by_family_key(selected)
-    ranked_by_key = _group_by_family_key(ranked)
+    selected_by_key = _group_by_family_key(selected, cache)
+    ranked_by_key = _group_by_family_key(ranked, cache)
 
     already_selected_ids = {id(cs) for cs in selected}
 
     ordered_keys: list[tuple] = []
     for cs in selected:
-        key = _family_key(cs)
+        key = _family_key(cs, cache)
         if key not in ordered_keys:
             ordered_keys.append(key)
 
@@ -391,11 +388,11 @@ def build_families(
         family = Family(family_key=key, members=family_members)
 
         family_elements = [el for cs in members for el in cs.cluster.elements]
-        container = _find_container(family_elements, ranked, key, absorbed_keys | rich_family_keys)
+        container = _find_container(family_elements, ranked, key, absorbed_keys | rich_family_keys, cache)
         if container is not None:
-            family.container_path = _describe_container(container.cluster)
+            family.container_path = _describe_container(container.cluster, cache)
             family.container_count = container.cluster.count
-            absorbed_keys.add(_family_key(container))
+            absorbed_keys.add(_family_key(container, cache))
 
         families.append(family)
 
@@ -406,8 +403,8 @@ def build_families(
     return [f for f in families if f.family_key not in absorbed_keys]
 
 
-def _describe_container(cluster: Cluster) -> str:
-    return describe_path(cluster.elements[0]) if cluster.elements else "?"
+def _describe_container(cluster: Cluster, cache: dict) -> str:
+    return describe_path(cluster.elements[0], cache=cache) if cluster.elements else "?"
 
 
 __all__ = ["Family", "FamilyMember", "build_families"]

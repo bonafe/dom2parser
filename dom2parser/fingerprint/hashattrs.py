@@ -55,6 +55,10 @@ def find_uniform_build_artifact_attrs(root: etree._Element) -> frozenset[str]:
 
 
 _ATOMIC_CLASS_TOKEN_RE = re.compile(r"^[a-z][a-z0-9]*$")
+_STYLEX_CLASS_TOKEN_RE = re.compile(r"^x[a-z0-9]{5,8}$")
+# React renders `className={cond && "foo"}` as the literal string "false";
+# such tokens are template bugs, never identity.
+_JUNK_CLASS_TOKENS = frozenset({"false", "true", "null", "undefined"})
 
 
 def looks_like_atomic_class_token(token: str) -> bool:
@@ -63,7 +67,18 @@ def looks_like_atomic_class_token(token: str) -> bool:
     names. Requires: all-lowercase-alnum (no hyphen/underscore/camelCase --
     those are strong signals of an intentional, human-written name), a
     length in the range generators typically produce, at least one digit,
-    and very few vowels (generated identifiers rarely spell real words)."""
+    and very few vowels (generated identifiers rarely spell real words).
+
+    Stylex specifically emits `x` + a 5-8 char base-36 hash, and that hash
+    is frequently digit-free or vowel-rich (`xeuugli`, `xelbjmh`, `xahtqtb`
+    on oss_gov_br_whatsapp.html), so that exact shape is accepted without
+    the digit/vowel checks. Known cost: a real class like `xlarge` is
+    flagged too -- bounded, since fingerprinting falls back to co-occurring
+    classes or other signals."""
+    if token in _JUNK_CLASS_TOKENS:
+        return True
+    if _STYLEX_CLASS_TOKEN_RE.match(token):
+        return True
     if not (4 <= len(token) <= 12):
         return False
     if not _ATOMIC_CLASS_TOKEN_RE.match(token):
@@ -72,6 +87,23 @@ def looks_like_atomic_class_token(token: str) -> bool:
         return False
     vowels = sum(1 for c in token if c in "aeiou")
     return vowels <= 1
+
+
+_RANDOM_TOKEN_RE = re.compile(r"^[A-Za-z0-9]{6,}$")
+
+
+def looks_like_random_token(token: str) -> bool:
+    """True for id/testid VALUES shaped like a generated instance key
+    (`Xk9pQ2`, `a8Bc3dEf`): separator-free alnum of generator-typical
+    length mixing letters and digits. Deliberately loose on its own -- the
+    caller only consults it once it already knows the value differs
+    between same-tag siblings with no shared prefix, i.e. when the only
+    remaining question is "random key or genuinely distinct names?"."""
+    return bool(
+        _RANDOM_TOKEN_RE.match(token)
+        and any(c.isdigit() for c in token)
+        and any(c.isalpha() for c in token)
+    )
 
 
 def semantic_class_tokens(class_attr_value: str) -> tuple[str, ...]:

@@ -53,6 +53,12 @@ print(result.reduction["reduction_pct"])
 # {'chars': 96.8, 'tokens': 96.8}
 ```
 
+Um `*` dentro de um segmento do path (`div[data-testid="list-item-*"]`,
+`tr#tx-*`) marca a parte de um id/testid que varia por instância — um
+índice de lista virtualizada, um id de banco, um slug. Não é para ser usado
+literalmente num seletor: prefira `[data-testid^="list-item-"]` ou o
+próximo segmento estável.
+
 `compress(html, *, max_clusters=10, min_cluster_size=2, max_samples_per_cluster=7)`
 retorna um `CompactRepresentation` com `.text` (representação em texto), `.json`
 (mesma informação estruturada) e `.reduction` (contagem de chars/tokens original

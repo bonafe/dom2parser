@@ -15,7 +15,10 @@ rows -- the single highest-ranked cluster on the page.
 
 from pathlib import Path
 
+import pytest
+import yaml
 from lxml import etree
+from lxml.cssselect import CSSSelector
 
 from dom2parser.cluster.families import _resolve_by_true_path, build_families
 from dom2parser.cluster.rank import rank_clusters, select_top_level_clusters
@@ -28,10 +31,10 @@ from dom2parser.html_io import load_html_file, parse_html
 from dom2parser.sanitize import full_sanitize
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
+GROUND_TRUTH = yaml.safe_load((Path(__file__).parent / "fixtures" / "ground_truth.yaml").read_text())
 
 
-def _families_for(path, max_clusters=10):
-    root = load_html_file(path)
+def _families_for_root(root, max_clusters=10):
     clean = full_sanitize(root)
     build_artifacts = find_uniform_build_artifact_attrs(clean)
     all_elements = list(clean.iter(etree.Element))
@@ -39,7 +42,11 @@ def _families_for(path, max_clusters=10):
     clusters = [c for c in cluster_siblings(candidates, build_artifacts) if c.count >= 2]
     ranked = rank_clusters(clusters)
     selected = select_top_level_clusters(ranked, max_clusters=max_clusters)
-    return build_families(selected, ranked)
+    return clean, build_families(selected, ranked)
+
+
+def _families_for(path, max_clusters=10):
+    return _families_for_root(load_html_file(path), max_clusters)[1]
 
 
 def _transaction_family(families):
@@ -187,3 +194,90 @@ def test_virtualized_list_per_instance_index_does_not_shatter_the_cluster():
     resolved, _ = _resolve_by_true_path([rank_clusters([cluster])[0]])
     assert len(resolved) == 1, "a per-instance list index must not fragment a genuinely repeated structure"
     assert resolved[0].cluster.count == 5
+
+
+def test_slug_ids_on_the_rows_themselves_do_not_shatter_the_cluster():
+    # Server-rendered listings routinely key each row by a non-numeric
+    # slug (`id="item-apple"`) -- no digit to normalize away, so only the
+    # sibling-enumeration evidence in `location_key` keeps them together.
+    html = "<html><body><ul>" + "".join(
+        f"<li id='item-{name}' class='product'><span>{name}</span><span>9</span></li>"
+        for name in ("apple", "banana", "cherry", "date")
+    ) + "</ul></body></html>"
+    rows = parse_html(html).xpath("//li")
+    cluster = Cluster(
+        structural_key=("li", ("class", ("product",))),
+        content_signature=("TEXT", "INTEGER"),
+        elements=rows,
+    )
+    resolved, _ = _resolve_by_true_path([rank_clusters([cluster])[0]])
+    assert len(resolved) == 1
+    assert resolved[0].cluster.count == 4
+
+
+def test_shape_only_variant_with_optional_child_joins_the_family():
+    # No identity signal at all (every class atomic) makes the fingerprint
+    # key include the exact children tuple, so rows with one optional
+    # extra child get a different structural_key. Same true location must
+    # still put them in one family rather than two under the same path.
+    html = "<html><body><div id='list'>" + "".join(
+        f"<div data-testid='list-item-{i}'><div class='x78zum5'><div>a</div><div>b</div>"
+        + ("<div>3</div>" if i % 3 == 0 else "")
+        + "</div></div>"
+        for i in range(6)
+    ) + "</div></body></html>"
+    _, families = _families_for_root(parse_html(html), max_clusters=10)
+    assert len(families) == 1, [describe_path(f.primary.cluster.elements[0]) for f in families]
+    assert sum(m.cluster.count for m in families[0].members) == 6
+    assert 'div[data-testid="list-item-*"]' in describe_path(families[0].primary.cluster.elements[0])
+
+
+def _nearest_in(node, pool: set):
+    while node is not None:
+        if node in pool:
+            return node
+        node = node.getparent()
+    return None
+
+
+def _matched_in_single_family(clean, families, selector: str) -> int:
+    """How many elements matched by `selector` land in the single family
+    that holds most of them -- counting a target as held when it IS a
+    family element, sits under one (the family clusters a wrapper of it)
+    or contains one (the family clusters a cell inside it). Shattering
+    across families or dropping them lowers this."""
+    targets = set(CSSSelector(selector)(clean))
+    best = 0
+    for family in families:
+        family_nodes = {el for m in family.members for el in m.cluster.elements}
+        held = {t for t in targets if _nearest_in(t, family_nodes) is not None}
+        held.update(t for el in family_nodes for t in (_nearest_in(el, targets),) if t is not None)
+        best = max(best, len(held))
+    return best
+
+
+# Pre-existing, out-of-scope limitation: a STATE class on an ancestor
+# (`li.c-headline--newslist.is-hidden` vs. the same `li` without it) reads
+# as a different location, so folhadesp.html's 100 headline items split
+# 70/30. Fixing it means treating `is-*`/`has-*`/`active`-style state
+# tokens as non-identity in fingerprinting, not in path logic.
+_KNOWN_STATE_CLASS_SPLITS = {("folhadesp.html", "li.c-headline--newslist")}
+
+
+def _ground_truth_params():
+    for entry in GROUND_TRUTH:
+        for relevant in entry.get("relevant", []):
+            marks = []
+            if (entry["file"], relevant["selector"]) in _KNOWN_STATE_CLASS_SPLITS:
+                marks.append(pytest.mark.xfail(strict=True, reason="ancestor state class splits the location"))
+            yield pytest.param(entry, relevant, marks=marks, id=f"{entry['file']}-{relevant['selector']}")
+
+
+@pytest.mark.parametrize("entry, relevant", list(_ground_truth_params()))
+def test_ground_truth_relevant_structures_land_in_a_single_family(entry, relevant):
+    clean, families = _families_for_root(load_html_file(EXAMPLES_DIR / entry["file"]), max_clusters=10)
+    covered = _matched_in_single_family(clean, families, relevant["selector"])
+    assert covered >= 0.8 * relevant["count"], (
+        f"{entry['file']} {relevant['selector']}: only {covered}/{relevant['count']} "
+        "instances end up in one family -- shattered across families or dropped"
+    )

@@ -137,8 +137,16 @@ medição contra ground truth escrito à mão, não por raciocínio:
   promoção sobe enquanto cada elemento tem pai próprio, parando onde os irmãos
   convergem no contêiner.
 
+- **Um registro pode ser vários irmãos.** Um item do Hacker News são três `tr`;
+  uma entrada de glossário é `dt` + `dd`. O registro é um segmento — âncora
+  mais irmãos seguintes até a próxima âncora — e a âncora é a posição do
+  período com mais identidade, por isso o `dt` (que tem `id`) e não a `dd`.
+
 Cada etapa nasceu de comportamento real observado em HTML de produção (bancos,
-catálogos de dados abertos, notícias, WhatsApp Web). Detalhamento em
+catálogos de dados abertos, notícias, WhatsApp Web) e no corpus público em
+`corpus/` — sete páginas sem dado pessoal, uma por modo de falha, com
+ground truth e um teste-placar em que toda lacuna conhecida é um `xfail`
+estrito com a razão medida. Detalhamento em
 [architecture.html](https://bonafe.github.io/DOM2parser/architecture.html) e o
 raciocínio por trás de cada decisão em
 [decisions.html](https://bonafe.github.io/DOM2parser/decisions.html).

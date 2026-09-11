@@ -299,6 +299,54 @@
 </p>
 </div>
 
+<div class="adr" id="adr-010">
+<h3>ADR-010 — Corpus público por modo de falha; registro como segmento de irmãos <span class="status">Aceita</span></h3>
+<h4>Contexto</h4>
+<p>
+  <code>examples/</code> tem páginas reais com dado pessoal e é gitignored, então a maior
+  parte da suíte só rodava numa máquina e quase toda constante do estágio de parser tinha
+  uma única página de evidência. A primeira rodada de um corpus público de sete páginas,
+  cada uma escolhida por um modo de falha, derrubou 10 verificações — id gerado pelo
+  Parsoid estilhaçando uma tabela de 242 linhas, classe utilitária do Bootstrap valendo
+  como identidade, descoberta de campos a partir de <code>records[0]</code> quando esse
+  era a linha de cabeçalho, <code>£51.77</code> não sendo MONEY, e um padrão que aparecia
+  em três páginas de treze: o registro espalhado por vários irmãos.
+</p>
+<h4>Decisão</h4>
+<p>
+  O corpus é commitado em <code>corpus/</code> com ground truth próprio e um teste-placar
+  (<code>tests/test_corpus.py</code>) em que toda lacuna conhecida é <code>xfail</code>
+  estrito com a razão medida — consertar vira virar um teste, nunca afrouxar um número.
+  Toda constante nova precisa de mais de uma página atrás de si.
+</p>
+<p>
+  Um registro passa a ser um <strong>segmento de irmãos</strong>: a âncora que o seletor
+  casa mais os irmãos seguintes até a próxima âncora (<code>span</code>). Cortando os
+  filhos do contêiner em cada âncora, os segmentos repetem um padrão —
+  <code>(tr, tr, tr)</code> no Hacker News, <code>(dt, dd)</code> num glossário — e um
+  segmento pode terminar cedo (dois termos, uma definição), nunca passar do padrão. Como a
+  família pode ter caído no membro errado (a <code>dd</code>), a âncora natural é a
+  posição do período com mais identidade (testid, classe, id); o deslocamento é
+  re-fechado e re-verificado antes de valer. Cada campo carrega <code>sibling</code>: a
+  qual elemento do segmento seu locator é relativo.
+</p>
+<h4>Consequências</h4>
+<p>
+  Seis regras entraram porque o corpus as exigiu, e cada uma tem a página que a motivou
+  no docstring: id só é identidade quando o documento o <em>reutiliza</em>; classe de
+  layout (<code>col-*</code>, <code>mb-5</code>, <code>row</code>) não é identidade;
+  candidatos a campo vêm do registro de forma modal (filhos e netos), não do primeiro; um
+  valor visto uma vez não é campo; filho inline é parte do texto só quando o texto próprio
+  do elemento domina o dos filhos (prosa com links) — se os filhos dominam, são sub-campos
+  rotulados; filho de um único símbolo (<code>¶</code>) é decoração e nunca registro.
+</p>
+<p>
+  Limitação que permanece: o fan-out <em>para baixo</em> do WhatsApp (dois
+  <code>div</code> irmãos sem identidade por linha, sob um pai identificado) é o inverso
+  deste mecanismo e continua declarado como falha.
+</p>
+</div>
+
 <hr>
 <p class="callout warn">
   <strong>Risco conhecido e aceito:</strong> o ranking de relevância (ADR-003, ADR-004)

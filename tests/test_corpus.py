@@ -24,14 +24,7 @@ GROUND_TRUTH = yaml.safe_load((CORPUS_DIR / "ground_truth.yaml").read_text())
 
 # (file, check) -> measured reason. Removing an entry is how a fix is
 # claimed; a stale entry fails the suite because the xfail is strict.
-_FANOUT = (
-    "fan-out: each glossary term is a `dt` + `dd` sibling pair, and a record that spans "
-    "several consecutive siblings is not synthesized yet -- the `dd` is emitted alone"
-)
-_KNOWN_GAPS: dict[tuple[str, str], str] = {
-    ("python_glossary.html", "record"): _FANOUT,
-    ("python_glossary.html", "fields"): _FANOUT,
-}
+_KNOWN_GAPS: dict[tuple[str, str], str] = {}
 
 
 def _params(check: str):

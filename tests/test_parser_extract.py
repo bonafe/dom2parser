@@ -174,3 +174,58 @@ def test_bancodobrasil_statement_extracts_named_transactions():
     # each reported with its reason rather than dropped.
     assert report.skipped == 15
     assert report.as_text().startswith("registros encontrados: 139")
+
+
+_GLOSSARY = """
+<dl class="glossary">
+  <dt id="term-abc">abstract base class<a class="headerlink" href="#term-abc">¶</a></dt>
+  <dd><p>A class that cannot be instantiated.</p></dd>
+  <dt id="term-arg">argument<a class="headerlink" href="#term-arg">¶</a></dt>
+  <dd><p>A value passed to a function.</p></dd>
+  <dt id="term-bdfl">BDFL<a class="headerlink" href="#term-bdfl">¶</a></dt>
+  <dt id="term-bdfl2">benevolent dictator<a class="headerlink" href="#term-bdfl2">¶</a></dt>
+  <dd><p>Guido.</p></dd>
+  <dt id="term-cls">class<a class="headerlink" href="#term-cls">¶</a></dt>
+  <dd><p>A template for objects.</p></dd>
+</dl>
+"""
+
+
+def test_a_record_spread_over_sibling_pairs_is_one_record():
+    """A definition list spreads each entry over `dt` + `dd`. The family
+    the pipeline finds may be the `dd`; the record must still be the `dt`
+    (it carries the id) with the definition as a field, and two terms
+    sharing one definition must not borrow the next entry's."""
+    spec = build_spec(_GLOSSARY)
+    record = next(r for r in spec.records if r.span == 2)
+    assert record.selector.endswith("dt"), f"anchor should be the term, got {record.selector!r}"
+    names = {f.name: f for f in record.fields}
+    assert "term" in names and "definition" in names, f"got {sorted(names)}"
+    assert names["term"].sibling == 0 and names["definition"].sibling == 1
+
+    kept = execute(spec, _GLOSSARY)[record.name].kept
+    by_term = {r.values["term"]: r.values["definition"] for r in kept}
+    assert by_term["abstract base class"] == "A class that cannot be instantiated."
+    assert by_term["BDFL"] == "", "a term whose dd belongs to the next dt must not take it"
+    assert by_term["benevolent dictator"] == "Guido."
+
+
+def test_permalink_glyph_is_not_part_of_the_term():
+    spec = build_spec(_GLOSSARY)
+    record = next(r for r in spec.records if r.span == 2)
+    terms = [r.values["term"] for r in execute(spec, _GLOSSARY)[record.name].kept]
+    assert "¶" not in "".join(terms), terms
+
+
+def test_hacker_news_style_three_row_items_are_one_record():
+    html = "<table><tbody>" + "".join(
+        f"<tr class='athing' id='{i}'><td class='title'><span class='titleline'><a href='/{i}'>Story {i}</a></span></td></tr>"
+        f"<tr><td class='subtext'><span class='score'>{i * 10} points</span> by <a class='hnuser'>user{i}</a></td></tr>"
+        f"<tr class='spacer'></tr>"
+        for i in range(1, 6)
+    ) + "</tbody></table>"
+    spec = build_spec(html)
+    record = next(r for r in spec.records if r.span == 3)
+    assert record.selector == "tr.athing", record.selector
+    values = execute(spec, html)[record.name].kept[0].values
+    assert values["titleline"] == "Story 1" and values["score"] == "10 points", values

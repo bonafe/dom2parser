@@ -121,9 +121,29 @@ def _shared_prefix_stripped(names: list[str]) -> list[str]:
     return stripped
 
 
-def element_name(el) -> tuple[str, str] | None:
-    """A name read off one field element, with the evidence that produced
-    it, or None when the element says nothing about itself."""
+# Tags whose meaning HTML itself fixes. `dt`/`dd` are the only names a
+# definition list ever offers; the rest are cheap and rarely wrong.
+_TAG_NAMES = {
+    "dt": "term",
+    "dd": "definition",
+    "time": "datetime",
+    "img": "image",
+    "figcaption": "caption",
+    "cite": "citation",
+    "blockquote": "quote",
+    "q": "quote",
+    "address": "address",
+    "summary": "summary",
+    "h1": "title",
+    "h2": "title",
+    "h3": "title",
+    "h4": "title",
+    "h5": "title",
+    "h6": "title",
+}
+
+
+def _own_name(el) -> tuple[str, str] | None:
     for attr, source in (("itemprop", "itemprop"), ("aria-label", "aria_label")):
         value = el.get(attr)
         if value and value.strip():
@@ -131,10 +151,40 @@ def element_name(el) -> tuple[str, str] | None:
     classes = semantic_class_tokens(el.get("class", ""))
     if classes:
         return slugify(classes[0]), "class"
+    if el.tag in _TAG_NAMES:
+        return _TAG_NAMES[el.tag], "tag"
     return None
 
 
-def resolve_names(field_elements: list, rows: list[list[str]], types: list[str]) -> list[tuple[str, str]]:
+def element_name(el, scope=None) -> tuple[str, str] | None:
+    """A name read off one field element, with the evidence that produced
+    it, or None when nothing says what the value is.
+
+    The evidence is often on a wrapper rather than on the leaf: Hacker
+    News puts the story title in a bare `a` inside `span.titleline`, and a
+    glossary definition is a bare `p` inside the `dd`. So the walk goes up
+    to (not including) the scope, and takes the first ancestor that names
+    itself -- by class, or by a tag HTML gives a meaning to."""
+    own = _own_name(el)
+    if own is not None:
+        return own
+    node = el.getparent()
+    while node is not None and node is not scope:
+        inherited = _own_name(node)
+        if inherited is not None:
+            return inherited[0], f"ancestor_{inherited[1]}"
+        node = node.getparent()
+    if scope is not None and scope is not el and scope.tag in _TAG_NAMES:
+        return _TAG_NAMES[scope.tag], "ancestor_tag"
+    return None
+
+
+def resolve_names(
+    field_elements: list,
+    rows: list[list[str]],
+    types: list[str],
+    scopes: list | None = None,
+) -> list[tuple[str, str]]:
     """Names for every field slot, as `(name, source)`.
 
     Header evidence wins outright when present: it names all slots at once
@@ -143,9 +193,10 @@ def resolve_names(field_elements: list, rows: list[list[str]], types: list[str])
     if from_header and len(from_header) == len(field_elements):
         return [(name, "header_row") for name in from_header]
 
+    scopes = scopes or [None] * len(field_elements)
     names, sources = [], []
     for slot, el in enumerate(field_elements):
-        derived = element_name(el) if el is not None else None
+        derived = element_name(el, scopes[slot]) if el is not None else None
         if derived is None:
             names.append(f"{types[slot].lower()}_{slot + 1}")
             sources.append("type_position")
@@ -157,12 +208,10 @@ def resolve_names(field_elements: list, rows: list[list[str]], types: list[str])
     if len(read_off_page) == len(names):
         names = _shared_prefix_stripped(names)
 
-    seen: dict[str, int] = {}
-    unique = []
-    for name in names:
-        seen[name] = seen.get(name, 0) + 1
-        unique.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
-    return list(zip(unique, sources))
+    # Collisions are left for the caller: a link's text and href columns
+    # share a name here on purpose, and the href one is renamed `_url`
+    # afterwards. Suffixing now would leave `titleline_2` / `titleline_2_url`.
+    return list(zip(names, sources))
 
 
 def text_of(el) -> str:

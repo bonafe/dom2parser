@@ -34,12 +34,16 @@ folhadesp.html.
 
 from __future__ import annotations
 
+from collections import Counter
+
 from lxml import etree
 
 from ..compact.paths import location_key
+from ..fingerprint.hashattrs import semantic_class_tokens
 from ..fingerprint.structural import compute_fingerprint, fingerprint_key
 
 MAX_PROMOTION_LEVELS = 6
+MAX_SPAN = 4
 
 
 def structural_identity(el, cache: dict | None = None, reused_ids: frozenset[str] = frozenset()) -> tuple:
@@ -110,4 +114,116 @@ def promote(elements: list) -> list[list]:
     return levels
 
 
-__all__ = ["closure", "closure_of", "promote", "structural_identity"]
+def _identity_signals(el) -> int:
+    return (
+        int(bool(el.get("data-testid")))
+        + int(bool(semantic_class_tokens(el.get("class", ""))))
+        + int(bool(el.get("id")))
+    )
+
+
+def _sibling_positions(anchors: list) -> tuple[list, list[int]] | None:
+    """The anchors' shared parent's element children and the anchors'
+    positions among them, or None when the anchors have several parents."""
+    if len(anchors) < 2:
+        return None
+    parent = anchors[0].getparent()
+    if parent is None or any(a.getparent() is not parent for a in anchors):
+        return None
+    kids = [c for c in parent if isinstance(c.tag, str)]
+    index = {id(c): i for i, c in enumerate(kids)}
+    return kids, sorted(index[id(a)] for a in anchors)
+
+
+def period(anchors: list) -> int:
+    """How many consecutive siblings make one record when `anchors` are the
+    records' first elements; 1 when each anchor is a whole record.
+
+    Some pages spread one record over several siblings under a shared
+    parent: a Hacker News item is `tr.athing` + a subtext `tr` + a spacer;
+    a glossary entry is `dt` + `dd`. Cut the parent's children at each
+    anchor and the segments repeat a pattern -- `(tr, tr, tr)`, `(dt, dd)`.
+    The modal segment length is the span. A segment may end early (two
+    terms sharing one definition) but never run long; the last one is the
+    exception, since it runs to the parent's end and a trailing footer row
+    (Hacker News's "More" link) lands in it -- only its head has to fit."""
+    located = _sibling_positions(anchors)
+    if located is None:
+        return 1
+    kids, positions = located
+    return _regular_span(kids, positions) or 1
+
+
+def anchor_offsets(anchors: list) -> list[int]:
+    """Candidate shifts from the elements given to the record's natural
+    anchor, most identity first.
+
+    The family may have landed on the wrong member of the pattern -- the
+    `dd` rather than the `dt` -- and pairing each definition with the NEXT
+    term would be silently wrong. The natural anchor is the position in
+    the pattern carrying the most identity (testid, class, id). Whether a
+    shift is right cannot be judged here: seen from the `dd` the entry
+    where two terms share a definition is irregular, and the orphan `dt`
+    only joins the set once the caller re-closes the shifted anchors. So
+    this ranks; the caller shifts, re-closes, re-verifies, and asks
+    `period` again."""
+    located = _sibling_positions(anchors)
+    if located is None:
+        return [0]
+    kids, positions = located
+    scored = []
+    for offset in range(MAX_SPAN):
+        if positions[0] - offset < 0:
+            break
+        shifted = [kids[p - offset] for p in positions]
+        if len({el.tag for el in shifted}) != 1:
+            continue
+        scored.append((-sum(_identity_signals(el) for el in shifted), offset))
+    scored.sort()
+    return [offset for _, offset in scored] or [0]
+
+
+def _regular_span(kids: list, positions: list[int]) -> int:
+    """The pattern length when the segments cut at `positions` repeat one
+    pattern (every inner segment a prefix of the modal one, the last
+    segment's head matching it), else 0."""
+    bounds = positions[1:] + [len(kids)]
+    segments = [tuple(c.tag for c in kids[start:end]) for start, end in zip(positions, bounds)]
+    inner, last = segments[:-1], segments[-1]
+    if not inner:
+        return 0
+    modal, share = Counter(inner).most_common(1)[0]
+    span = len(modal)
+    if span < 2 or share * 2 <= len(inner):
+        return 0
+    if any(len(s) > span or s != modal[: len(s)] for s in inner):
+        return 0
+    head = last[:span]
+    if head != modal[: len(head)]:
+        return 0
+    return span
+
+
+def shift_anchors(anchors: list, offset: int) -> list:
+    """Each anchor's `offset`-th preceding element sibling."""
+    out = []
+    for anchor in anchors:
+        node = anchor
+        for _ in range(offset):
+            node = node.getprevious()
+            while node is not None and not isinstance(node.tag, str):
+                node = node.getprevious()
+        if node is not None:
+            out.append(node)
+    return out
+
+
+__all__ = [
+    "anchor_offsets",
+    "closure",
+    "closure_of",
+    "period",
+    "promote",
+    "shift_anchors",
+    "structural_identity",
+]

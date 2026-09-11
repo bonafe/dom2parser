@@ -29,14 +29,18 @@ SCHEMA_VERSION = 1
 @dataclass(frozen=True)
 class FieldEntry:
     name: str
-    locator: str
+    locator: str  # CSS relative to the scoped element; "" means the scoped element itself
     type: str
-    capture: str
+    capture: str  # "text" | "attr"
     attribute: str | None
     required: bool
     present: int
     total: int
     name_source: str
+    # Which element of the record the locator is relative to: 0 is the
+    # anchor the selector matched, 1 its next element sibling, and so on.
+    # Only ever non-zero when the record's `span` is greater than one.
+    sibling: int = 0
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,10 @@ class RecordEntry:
     skip_when: dict = field(default_factory=dict)
     verified: dict = field(default_factory=dict)
     provenance: dict = field(default_factory=dict)
+    # How many consecutive element siblings make up one record. A Hacker
+    # News item is three `tr` (title row, subtext row, spacer); a glossary
+    # entry is `dt` + `dd`. The selector matches the first of them.
+    span: int = 1
 
 
 @dataclass(frozen=True)
@@ -80,6 +88,7 @@ class ParserSpec:
                 skip_when=r.get("skip_when", {}),
                 verified=r.get("verified", {}),
                 provenance=r.get("provenance", {}),
+                span=r.get("span", 1),
             )
             for r in data.get("records", [])
         ]

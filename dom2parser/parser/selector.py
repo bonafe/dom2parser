@@ -261,8 +261,14 @@ def synthesize(targets, root) -> Synthesis:
     # Shortest first, so the simplest exact selector is found early and the
     # rest of the search can be abandoned. Without this the candidate set
     # is scanned in full: measured at 84k evaluations and 77s on
-    # acervodadostecnicosgovbr.html.
-    for candidate in sorted(_candidates(targets), key=lambda c: len(c.render())):
+    # acervodadostecnicosgovbr.html. A bare tag goes last regardless of
+    # length: `article` reaches the twenty books exactly today and stops
+    # the day a second article lands on the page, while
+    # `article.product_pod` says which twenty it means.
+    bare = _tag_of(targets)
+    for candidate in sorted(
+        _candidates(targets), key=lambda c: (c.anchor is None and c.own == bare, len(c.render()))
+    ):
         evaluated = _evaluate(candidate.render(), root, target_uids)
         if evaluated is None:
             continue

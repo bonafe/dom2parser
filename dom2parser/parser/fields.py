@@ -25,6 +25,7 @@ one record is rejected.
 
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass
 
@@ -32,9 +33,12 @@ from cssselect import HTMLTranslator
 from lxml.etree import XPath
 
 from ..content.signature import classify
+from ..dom_utils import collapse_whitespace
 from ..fingerprint.hashattrs import semantic_class_tokens
 from ..sanitize.strip import REMOVED_TAGS
 from .naming import resolve_names, slugify, table_header_cells, text_of
+
+_DECORATION_RE = re.compile(r"^[^\w\s]$")
 
 
 # `CSSSelector` compiles to `descendant-or-self::`, so a locator like
@@ -57,6 +61,7 @@ class FieldSpec:
     attribute: str | None
     present: int
     total: int
+    sibling: int = 0
 
     @property
     def required(self) -> bool:
@@ -64,16 +69,110 @@ class FieldSpec:
 
 
 def relative_locator(css: str) -> XPath:
+    """Compile a locator relative to the element it is evaluated against.
+
+    A leading `>` (the relative-selector form of Selectors 4) means a
+    direct child. It matters: `p:nth-of-type(1)` alone compiles to
+    `descendant::p[...]` and also finds the first paragraph of every note
+    box nested inside a glossary definition, which made the definition's
+    own first paragraph ambiguous and lost it."""
+    if css.startswith(">"):
+        return XPath(_TRANSLATOR.css_to_xpath(css[1:].strip(), prefix="child::"))
     return XPath(_TRANSLATOR.css_to_xpath(css, prefix="descendant::"))
 
 
+def is_decoration(child) -> bool:
+    """A child whose entire text is one symbol -- the `¶` of a permalink,
+    a `›` chevron, a `#` anchor -- is furniture hanging off the value, not
+    part of it. Without this every Sphinx `<dt>` reads as a non-leaf and
+    the term itself is never a candidate."""
+    return bool(_DECORATION_RE.match(text_of(child)))
+
+
+# HTML's own phrasing content: a child of one of these tags is part of the
+# sentence it sits in, not a nested container. A `<p>` holding two links
+# and a `<code>` is still one value -- the paragraph -- which is what
+# keeps a glossary definition from dissolving into its hyperlinks.
+INLINE_TAGS = frozenset(
+    {
+        "a", "abbr", "b", "bdi", "bdo", "cite", "code", "data", "dfn", "em", "i", "kbd",
+        "mark", "q", "s", "samp", "small", "span", "strong", "sub", "sup", "time", "u", "var",
+    }
+)
+
+
+def _own_text(el) -> str:
+    return collapse_whitespace((el.text or "") + "".join(child.tail or "" for child in el))
+
+
 def _is_text_leaf(el) -> bool:
-    """True when the element's own text is not merely the concatenation of
-    richer children -- i.e. it is where the value actually lives."""
-    return not any(
-        isinstance(child.tag, str) and child.tag not in SKIP_TAGS and text_of(child)
-        for child in el
-    )
+    """True when the element is where a value lives, rather than a box
+    holding several.
+
+    A block child with text always makes a container. An inline child is
+    part of the sentence only when the element has prose of its own that
+    outweighs its inline children -- a glossary definition with two links
+    in it is one value. When the inline children carry the text and the
+    element itself has little or none, they are labelled pieces, not
+    prose: Hacker News's `td.title` holds `span.titleline` and
+    `span.sitebit`, and the quotes site's `span` holds `by`, then
+    `small.author`, then a link -- three values, not one."""
+    inline_text = 0
+    for child in el:
+        if not isinstance(child.tag, str) or child.tag in SKIP_TAGS or is_decoration(child):
+            continue
+        text = text_of(child)
+        if not text:
+            continue
+        if child.tag not in INLINE_TAGS:
+            return False
+        inline_text += len(text)
+    return inline_text == 0 or len(_own_text(el)) > inline_text
+
+
+def _inside_leaf(el, scope) -> bool:
+    """True when some ancestor below `scope` is itself a text leaf, so this
+    element's text is already part of a value and only an attribute of it
+    (a link's href) can add anything."""
+    node = el.getparent()
+    while node is not None and node is not scope:
+        if _is_text_leaf(node) and field_text(node):
+            return True
+        node = node.getparent()
+    return False
+
+
+def field_text(el) -> str:
+    """The element's text with decoration children left out."""
+    parts = [el.text or ""]
+    for child in el:
+        if isinstance(child.tag, str) and child.tag not in SKIP_TAGS and not is_decoration(child):
+            parts.append(text_of(child))
+        parts.append(child.tail or "")
+    return collapse_whitespace("".join(parts))
+
+
+def scoped_element(anchor, sibling: int, anchors: set | None = None):
+    """The element a field with `sibling=j` is relative to: the anchor
+    itself for 0, else its j-th following element sibling -- but never
+    past the next record's anchor, so a term with no definition of its own
+    does not borrow the next term as one."""
+    node = anchor
+    for _ in range(sibling):
+        node = node.getnext()
+        while node is not None and not isinstance(node.tag, str):
+            node = node.getnext()
+        if node is None or (anchors is not None and node in anchors):
+            return None
+    return node
+
+
+def capture_value(el, capture: str, attribute: str | None) -> str:
+    if el is None:
+        return ""
+    if capture == "attr":
+        return el.get(attribute) or ""
+    return field_text(el)
 
 
 def _capture_attrs(el) -> list[str]:
@@ -93,6 +192,8 @@ def _candidate_fields(record) -> list:
     out = []
     for el in record.iter():
         if not isinstance(el.tag, str) or el.tag in SKIP_TAGS or el is record:
+            continue
+        if is_decoration(el):
             continue
         if _is_text_leaf(el) or _capture_attrs(el):
             out.append(el)
@@ -137,6 +238,13 @@ def _locator_candidates(el, record) -> list[str]:
     while node is not None and node is not record:
         ancestors.append(node)
         node = node.getparent()
+    if not ancestors:
+        # A direct child of the scope is addressed as one, ahead of any
+        # descendant form that could also reach a namesake nested deeper.
+        out = [f"> {segment}" for segment in own] + out
+        direct_positional = _positional(el)
+        if direct_positional:
+            out.append(f"> {direct_positional}")
     # A wrapper with no class of its own still anchors by position: the
     # cells of a table row and the `h3` above a product title are the
     # normal case, not the exception, and without `td:nth-of-type(3) > a`
@@ -176,15 +284,22 @@ def _precedes(a, b) -> bool:
     return False
 
 
-def _resolve(locator: str, records: list) -> list | None:
-    """The element each record yields for this locator, or None if any
-    record resolves it ambiguously. `None` entries mark absence, which is
-    allowed -- that is what makes a field optional rather than invalid."""
+def _resolve(locator: str, scope: list) -> list | None:
+    """The element each scope element yields for this locator, or None if
+    any resolves it ambiguously. `None` entries mark absence, which is
+    allowed -- that is what makes a field optional rather than invalid.
+    An empty locator is the scope element itself (a `dd` that is the
+    whole definition)."""
+    if locator == "":
+        return list(scope)
     xpath = relative_locator(locator)
     resolved = []
-    for record in records:
+    for element in scope:
+        if element is None:
+            resolved.append(None)
+            continue
         try:
-            hits = xpath(record)
+            hits = xpath(element)
         except Exception:
             return None
         if len(hits) > 1:
@@ -194,9 +309,7 @@ def _resolve(locator: str, records: list) -> list | None:
 
 
 def _value_of(el, attribute: str | None) -> str:
-    if el is None:
-        return ""
-    return (el.get(attribute) or "") if attribute else text_of(el)
+    return capture_value(el, "attr" if attribute else "text", attribute)
 
 
 def _dominant_type(values: list[str]) -> str:
@@ -208,6 +321,7 @@ def _dominant_type(values: list[str]) -> str:
 # its value happens to look: a relative `href` like `item?id=496520` is a
 # URL by construction, even though as text it classifies as TEXT.
 ATTRIBUTE_TYPES = {"href": "URL", "src": "URL", "datetime": "DATETIME"}
+_ATTRIBUTE_SUFFIX = {"href": "url", "src": "image"}
 
 
 def _column_type(values: list[str], attribute: str | None) -> str:
@@ -270,8 +384,11 @@ def _representative_indices(records: list) -> list[int]:
     one. The record with the most children is added when its shape
     differs, so an optional field that the typical record lacks is still
     seen at all."""
-    shapes = [_shape(r) for r in records]
-    modal = Counter(shapes).most_common(1)[0][0]
+    shapes = [() if r is None else _shape(r) for r in records]
+    present = Counter(s for s in shapes if s)
+    if not present:
+        return []
+    modal = present.most_common(1)[0][0]
     typical = shapes.index(modal)
     widest = max(range(len(records)), key=lambda i: len(shapes[i]))
     return [typical] if shapes[widest] == modal else [typical, widest]
@@ -292,7 +409,7 @@ def _prune(columns: list[tuple]) -> list[tuple]:
     """
     kept = []
     for column in columns:
-        _, values, attribute, _ = column
+        _, values, attribute, *_ = column
         present = [v for v in values if v]
         # Seen once is not a pattern -- the same bar `min_cluster_size`
         # sets for a repeated structure. This is what keeps a header row's
@@ -313,35 +430,60 @@ def _prune(columns: list[tuple]) -> list[tuple]:
     return kept
 
 
-def discover(records: list) -> list[FieldSpec]:
+def discover(records: list, span: int = 1) -> list[FieldSpec]:
     """Fields shared by every record in `records`, which must be elements
-    of the original document."""
+    of the original document.
+
+    With `span > 1` a record is the anchor plus its following siblings, and
+    each of those siblings is a scope of its own: the Hacker News subtext
+    row is scope 1 of the `tr.athing` anchor, a glossary `dd` is scope 1
+    of its `dt`. A scope element that is itself a text leaf is a candidate
+    with the empty locator -- the `dd` is the definition, not a wrapper
+    around one."""
     if not records:
         return []
+    anchors = set(records)
 
     seen: set[tuple] = set()
     columns: list[tuple] = []
-    for source_index in _representative_indices(records):
-        source = records[source_index]
-        for el in _candidate_fields(source):
-            locator, resolved = None, None
-            for candidate in _locator_candidates(el, source):
-                found = _resolve(candidate, records)
-                if found is not None and found[source_index] is el:
-                    locator, resolved = candidate, found
-                    break
-            if locator is None:
-                continue
-
-            signature = tuple(id(r) if r is not None else None for r in resolved)
-            captures: list[str | None] = list(_capture_attrs(el))
-            if any(r is not None and text_of(r) for r in resolved):
-                captures.append(None)
-            for capture in captures:
-                if (signature, capture) in seen:
+    for offset in range(span):
+        scope = [scoped_element(r, offset, anchors) for r in records]
+        for source_index in _representative_indices(scope):
+            source = scope[source_index]
+            candidates = _candidate_fields(source)
+            # A scope that is itself a text leaf is the value: the `dd`
+            # that is the whole definition, the `dt` that is the term. A
+            # one-wide record is not its own field -- the executor already
+            # yields `_text` when nothing else exists.
+            if (offset or span > 1) and _is_text_leaf(source) and field_text(source):
+                candidates.insert(0, source)
+            for el in candidates:
+                locator, resolved = None, None
+                if el is source:
+                    locator, resolved = "", list(scope)
+                else:
+                    for candidate in _locator_candidates(el, source):
+                        found = _resolve(candidate, scope)
+                        if found is not None and found[source_index] is el:
+                            locator, resolved = candidate, found
+                            break
+                if locator is None:
                     continue
-                seen.add((signature, capture))
-                columns.append((locator, [_value_of(r, capture) for r in resolved], capture, resolved))
+
+                signature = tuple(id(r) if r is not None else None for r in resolved)
+                captures: list[str | None] = list(_capture_attrs(el))
+                # Text nested in a leaf is already part of that leaf's value.
+                if not (el is not source and _inside_leaf(el, source)) and any(
+                    r is not None and field_text(r) for r in resolved
+                ):
+                    captures.append(None)
+                for capture in captures:
+                    if (signature, capture) in seen:
+                        continue
+                    seen.add((signature, capture))
+                    columns.append(
+                        (locator, [_value_of(r, capture) for r in resolved], capture, resolved, offset, scope)
+                    )
 
     columns = _prune(columns)[:MAX_FIELDS_PER_RECORD]
     if not columns:
@@ -349,8 +491,10 @@ def discover(records: list) -> list[FieldSpec]:
 
     rows = [[column[1][i] for column in columns] for i in range(len(records))]
     types = [_column_type(column[1], column[2]) for column in columns]
-    first_elements = [next(r for r in column[3] if r is not None) for column in columns]
-    names = resolve_names(first_elements, rows, types)
+    first_index = [next(i for i, r in enumerate(column[3]) if r is not None) for column in columns]
+    first_elements = [column[3][i] for column, i in zip(columns, first_index)]
+    scopes = [column[5][i] for column, i in zip(columns, first_index)]
+    names = resolve_names(first_elements, rows, types, scopes)
 
     header = table_header_cells(records)
     if header:
@@ -358,7 +502,13 @@ def discover(records: list) -> list[FieldSpec]:
         for (name, source), column in zip(names, columns):
             cell = _cell_index(column[3], records)
             if cell is not None and cell < len(header) and header[cell]:
-                named.append((slugify(header[cell]), "th"))
+                # The bare column name belongs to the cell's text; a flag
+                # image or a link in the same cell is `location_image`,
+                # `location_url`, never `location` with the text as
+                # `location_2`.
+                suffix = _ATTRIBUTE_SUFFIX.get(column[2], column[2]) if column[2] else None
+                base = slugify(header[cell])
+                named.append((f"{base}_{suffix}" if suffix else base, "th"))
             else:
                 named.append((name, source))
         names = named
@@ -369,8 +519,8 @@ def discover(records: list) -> list[FieldSpec]:
     # `title_url`, not `title` and `title_2`.
     text_name_by_element = {id(c[3]): n for (n, _), c in zip(names, columns) if c[2] is None}
     names = [
-        (f"{text_name_by_element[id(c[3])]}_{'url' if c[2] in ('href', 'src') else c[2]}", source)
-        if c[2] and id(c[3]) in text_name_by_element
+        (f"{text_name_by_element[id(c[3])]}_{_ATTRIBUTE_SUFFIX.get(c[2], c[2])}", source)
+        if c[2] and id(c[3]) in text_name_by_element and source != "th"
         else (name, source)
         for (name, source), c in zip(names, columns)
     ]
@@ -386,11 +536,12 @@ def discover(records: list) -> list[FieldSpec]:
             attribute=attribute,
             present=sum(1 for v in values if v),
             total=len(records),
+            sibling=offset,
         )
-        for (name, source), (locator, values, attribute, _), field_type in zip(
+        for (name, source), (locator, values, attribute, _, offset, _scope), field_type in zip(
             names, columns, types
         )
     ]
 
 
-__all__ = ["FieldSpec", "discover", "relative_locator"]
+__all__ = ["FieldSpec", "capture_value", "discover", "field_text", "is_decoration", "relative_locator", "scoped_element"]

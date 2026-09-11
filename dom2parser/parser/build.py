@@ -27,9 +27,9 @@ from ..fingerprint.hashattrs import semantic_class_tokens
 from ..fingerprint.structural import filter_meaningful_candidates, reused_ids
 from ..html_io import parse_html
 from ..sanitize import full_sanitize
-from .fields import relative_locator, _value_of, discover
+from .fields import capture_value, discover, is_decoration, relative_locator, scoped_element
 from .naming import slugify
-from .records import closure, closure_of, promote
+from .records import anchor_offsets, closure, closure_of, period, promote, shift_anchors
 from .selector import synthesize
 from .spec import SCHEMA_VERSION, FieldEntry, ParserSpec, RecordEntry
 
@@ -63,7 +63,7 @@ def _best_level(family, clean, root, index, clean_index, cache, document_ids):
     Each level is re-closed before synthesis (see `records.closure_of`)."""
     seed = closure(family, clean, cache, document_ids)
     if not seed:
-        return None, None, ()
+        return None, None, (), 1
 
     exact, inexact = [], []
     for level in promote(originals_for(seed, index)):
@@ -78,10 +78,32 @@ def _best_level(family, clean, root, index, clean_index, cache, document_ids):
             inexact.append(result.fit)
     if not exact:
         inexact.sort(key=lambda f: (-f.recall, -f.precision, len(f.selector)))
-        return None, None, tuple(inexact[:MAX_REPORTED_MISSES])
-    identified = [pair for pair in exact if _has_identity(pair[0][0])]
-    elements, fit = (identified or exact)[-1]
-    return elements, fit, ()
+        return None, None, tuple(inexact[:MAX_REPORTED_MISSES]), 1
+    # A level made of decorations -- the `¶` permalinks hanging off every
+    # glossary term -- is never the record, however exact its selector and
+    # however confidently `a.headerlink` names itself.
+    usable = [pair for pair in exact if not is_decoration(pair[0][0])] or exact
+    identified = [pair for pair in usable if _has_identity(pair[0][0])]
+    elements, fit = (identified or usable)[-1]
+
+    # The record may be several siblings wide, and the family may sit on
+    # the wrong one (see records.anchor_offsets). A shift changes the
+    # element set, so it is re-closed and re-verified before `period` is
+    # asked whether the result is regular; the first offset that passes
+    # wins, and none passing leaves the record one sibling wide.
+    for offset in anchor_offsets(elements):
+        if offset == 0:
+            span = period(elements)
+            if span > 1:
+                return elements, fit, (), span
+            continue
+        shifted = shift_anchors(elements, offset)
+        in_clean = [clean_index[uid] for el in shifted if (uid := el.get(UID_ATTR)) in clean_index]
+        completed = originals_for(closure_of(in_clean, clean, cache, document_ids), index) or shifted
+        result = synthesize(completed, root)
+        if result.ok and result.fit.precision == 1.0 and period(completed) > 1:
+            return completed, result.fit, (), period(completed)
+    return elements, fit, (), 1
 
 
 def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[int, RecordEntry]]:
@@ -98,7 +120,7 @@ def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[i
     document_ids = reused_ids(clean)
     clean_index = build_index(clean)
     for position, family in enumerate(families):
-        elements, fit, near_misses = _best_level(
+        elements, fit, near_misses, span = _best_level(
             family, clean, root, index, clean_index, cache, document_ids
         )
         if fit is None:
@@ -128,7 +150,7 @@ def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[i
             continue
         emitted.add(record_set)
 
-        found = discover(elements)
+        found = discover(elements, span)
         header_values = _header_values(elements, found)
         # A record whose every field is empty carries no information; it
         # is a spacer row, or a header row whose cells are `th` where the
@@ -153,9 +175,11 @@ def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[i
                     present=f.present,
                     total=f.total,
                     name_source=f.name_source,
+                    sibling=f.sibling,
                 )
                 for f in found
             ],
+            span=span,
             skip_when=skip_when,
             verified={
                 "matched": fit.matched,
@@ -191,12 +215,16 @@ def _header_values(elements, found) -> list[str] | None:
     if not found or not all(f.name_source == "header_row" for f in found):
         return None
 
-    locators = [(relative_locator(f.locator), f.attribute) for f in found]
+    anchors = set(elements)
     for element in elements:
         values = []
-        for xpath, attribute in locators:
-            hits = xpath(element)
-            values.append(_value_of(hits[0], attribute) if hits else "")
+        for f in found:
+            scope = scoped_element(element, f.sibling, anchors)
+            if scope is None:
+                values.append("")
+                continue
+            hits = relative_locator(f.locator)(scope) if f.locator else [scope]
+            values.append(capture_value(hits[0] if hits else None, f.capture, f.attribute))
         if [slugify(v) for v in values] == [f.name for f in found]:
             return values
     return None

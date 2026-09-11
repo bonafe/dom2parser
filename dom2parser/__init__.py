@@ -72,7 +72,7 @@ def compress(
     }
 
     text = _render_text.render(families, by_family, spec.failures)
-    json_repr = _render_json.render(families, spec, by_family, originals)
+    json_repr = _render_json.render(families, spec, by_family, originals, root)
     reduction = reduction_report(html, text)
 
     return CompactRepresentation(

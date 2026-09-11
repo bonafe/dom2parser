@@ -126,13 +126,14 @@ print(result.reduction["reduction_pct"])
     "path_display": "tr &gt; td &gt; div.lancamentos &gt; table &gt; tbody &gt; tr",
     "record_selector": {
       "selector": "div.lancamentos tr",
+      "span": 1,
       "verified": {"matched": 154, "expected": 154, "precision": 1.0, "recall": 1.0}
     },
     "container": {"path_display": "... &gt; div.lancamentos", "count": 2},
     "fields": [
       {"name": "data", "locator": "td:nth-of-type(1)", "type": "DATE",
        "capture": "text", "attribute": null, "required": false,
-       "present": 125, "total": 154, "name_source": "header_row"}
+       "present": 125, "total": 154, "name_source": "header_row", "sibling": 0}
     ],
     "members": [{
       "role": "primary", "count": 122,
@@ -162,6 +163,15 @@ print(result.reduction["reduction_pct"])
   tipo nunca muda. E <code>failures</code> lista as estruturas cujo seletor casava
   demais sem regra explicando a sobra, com os quase-acertos medidos; elas nunca viram
   registro.
+</p>
+<p>
+  <code>span</code> é quantos irmãos consecutivos formam um registro — 3 num item do
+  Hacker News (<code>tr.athing</code> + linha de subtexto + espaçador), 2 num glossário
+  (<code>dt</code> + <code>dd</code>). O seletor casa o primeiro deles, e cada campo diz
+  em <code>sibling</code> a qual elemento do segmento seu <code>locator</code> é
+  relativo (0 é a âncora). Um locator vazio é o próprio elemento do escopo — a
+  <code>dd</code> que é a definição inteira — e um locator iniciado por <code>&gt;</code>
+  é filho direto. Ver <a href="decisions.html#adr-010">ADR-010</a>.
 </p>
 
 <h3>Executando o parser</h3>

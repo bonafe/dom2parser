@@ -23,37 +23,36 @@ from __future__ import annotations
 
 from ..cluster.siblings import optional_fields
 from ..dom_utils import collapse_whitespace, full_text
-from ..parser.fields import relative_locator
+from ..parser.executor import compile_record, record_values
 from .paths import describe_path
 from .render_text import MAX_TEXT_LEN, _describe_field_key
 
 SCHEMA_VERSION = 2
 
 
-def _example_values(el, record, field_xpaths) -> dict:
-    if not field_xpaths:
+def _example_values(el, compiled) -> dict:
+    if compiled is None or not compiled.locators:
         return {"_text": collapse_whitespace(full_text(el))[:MAX_TEXT_LEN]}
-    values = {}
-    for entry, xpath in zip(record.fields, field_xpaths):
-        hits = xpath(el) if el is not None else []
-        target = hits[0] if hits else None
-        if target is None:
-            values[entry.name] = ""
-        elif entry.attribute:
-            values[entry.name] = target.get(entry.attribute) or ""
-        else:
-            values[entry.name] = collapse_whitespace(full_text(target))
-    return values
+    # The sampled element belongs to the family, which may be an inner
+    # wrapper of the record; the record's anchor is its nearest ancestor
+    # (or itself) among the selector's matches.
+    anchor_set = compiled.anchor_set
+    node = el
+    while node is not None and node not in anchor_set:
+        node = node.getparent()
+    if node is None:
+        return {"_text": collapse_whitespace(full_text(el))[:MAX_TEXT_LEN]}
+    return {k: v[:MAX_TEXT_LEN] for k, v in record_values(node, compiled, anchor_set).items()}
 
 
-def _member_dict(member, record, field_xpaths, originals) -> dict:
+def _member_dict(member, compiled, originals) -> dict:
     cluster = member.cluster
     examples = []
     for i in member.sample.indices:
         element = cluster.elements[i]
         examples.append(
             {
-                "values": _example_values(originals.get(id(element), element), record, field_xpaths),
+                "values": _example_values(originals.get(id(element), element), compiled),
                 "reasons": member.sample.reasons.get(i, []),
             }
         )
@@ -70,12 +69,14 @@ def _member_dict(member, record, field_xpaths, originals) -> dict:
     }
 
 
-def render_family(family, record=None, field_xpaths=(), originals=None) -> dict:
+def render_family(family, record=None, compiled=None, originals=None) -> dict:
     elements = family.primary.cluster.elements
     return {
         "path_display": describe_path(elements[0]) if elements else None,
         "record_selector": (
-            {"selector": record.selector, "verified": record.verified} if record else None
+            {"selector": record.selector, "span": record.span, "verified": record.verified}
+            if record
+            else None
         ),
         "container": (
             {"path_display": family.container_path, "count": family.container_count}
@@ -93,22 +94,21 @@ def render_family(family, record=None, field_xpaths=(), originals=None) -> dict:
                 "present": f.present,
                 "total": f.total,
                 "name_source": f.name_source,
+                "sibling": f.sibling,
             }
             for f in (record.fields if record else [])
         ],
-        "members": [
-            _member_dict(member, record, field_xpaths, originals or {}) for member in family.members
-        ],
+        "members": [_member_dict(member, compiled, originals or {}) for member in family.members],
     }
 
 
-def render(families: list, spec=None, by_family=None, originals=None) -> dict:
+def render(families: list, spec=None, by_family=None, originals=None, root=None) -> dict:
     by_family = by_family or {}
     structures = []
     for position, family in enumerate(families):
         record = by_family.get(position)
-        xpaths = [relative_locator(f.locator) for f in record.fields] if record else []
-        structures.append(render_family(family, record, xpaths, originals))
+        compiled = compile_record(record, root) if record is not None and root is not None else None
+        structures.append(render_family(family, record, compiled, originals))
 
     return {
         "schema_version": SCHEMA_VERSION,

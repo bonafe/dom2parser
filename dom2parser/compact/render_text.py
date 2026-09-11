@@ -61,14 +61,18 @@ def _record_lines(record) -> list[str]:
         f"  selector: {record.selector}"
         f"  # matches {record.verified['matched']}, covers all {record.verified['expected']}"
     ]
+    if record.span > 1:
+        lines.append(f"  span: {record.span} consecutive siblings per record")
     if record.fields:
         lines.append("  fields:")
         for entry in record.fields:
             source = "" if entry.name_source == "header_row" else f" ({entry.name_source})"
             capture = f" @{entry.attribute}" if entry.attribute else ""
             presence = "" if entry.required else f", present in {entry.present}/{entry.total}"
+            scope = f"+{entry.sibling} " if entry.sibling else ""
+            locator = entry.locator or "(self)"
             lines.append(
-                f"    {entry.name}: {entry.locator}{capture}"
+                f"    {entry.name}: {scope}{locator}{capture}"
                 f"  # {entry.type}{presence}{source}"
             )
     if record.skip_when.get("header_values"):

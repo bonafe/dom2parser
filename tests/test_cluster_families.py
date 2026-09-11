@@ -256,21 +256,10 @@ def _matched_in_single_family(clean, families, selector: str) -> int:
     return best
 
 
-# Pre-existing, out-of-scope limitation: a STATE class on an ancestor
-# (`li.c-headline--newslist.is-hidden` vs. the same `li` without it) reads
-# as a different location, so folhadesp.html's 100 headline items split
-# 70/30. Fixing it means treating `is-*`/`has-*`/`active`-style state
-# tokens as non-identity in fingerprinting, not in path logic.
-_KNOWN_STATE_CLASS_SPLITS = {("folhadesp.html", "li.c-headline--newslist")}
-
-
 def _ground_truth_params():
     for entry in GROUND_TRUTH:
         for relevant in entry.get("relevant", []):
-            marks = []
-            if (entry["file"], relevant["selector"]) in _KNOWN_STATE_CLASS_SPLITS:
-                marks.append(pytest.mark.xfail(strict=True, reason="ancestor state class splits the location"))
-            yield pytest.param(entry, relevant, marks=marks, id=f"{entry['file']}-{relevant['selector']}")
+            yield pytest.param(entry, relevant, id=f"{entry['file']}-{relevant['selector']}")
 
 
 @pytest.mark.parametrize("entry, relevant", list(_ground_truth_params()))

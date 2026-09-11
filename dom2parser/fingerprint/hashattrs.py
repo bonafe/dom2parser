@@ -106,8 +106,53 @@ def looks_like_random_token(token: str) -> bool:
     )
 
 
+_STATE_CLASS_PREFIX_RE = re.compile(r"^(is|has|js)-[a-z0-9-]+$", re.IGNORECASE)
+_STATE_CLASS_WORDS = frozenset(
+    {
+        "active",
+        "collapsed",
+        "current",
+        "disabled",
+        "expanded",
+        "hidden",
+        "open",
+        "selected",
+        "visible",
+    }
+)
+
+
+def looks_like_state_class_token(token: str) -> bool:
+    """True for a class that records an element's transient UI STATE rather
+    than what the element is: `is-hidden`, `has-error`, `js-toggle`,
+    `active`, `open`.
+
+    State is not identity. Two elements of the same kind, one currently
+    hidden, are still the same kind -- but including the state token in the
+    fingerprint splits them into unrelated families. Measured on
+    folhadesp.html: the 100 newslist headlines split into 70 `is-hidden`
+    plus 30 others, so no single family (and therefore no single record
+    selector) covered the page's main content. The split is visible in the
+    path too, since both fingerprinting and `compact.paths` funnel through
+    `semantic_class_tokens`.
+
+    Known cost, symmetric with `looks_like_atomic_class_token`: a real
+    content class that happens to be one of these words (a tab genuinely
+    named `current`) stops being an identity signal. Bounded, since
+    identity then falls back to the element's other classes."""
+    lowered = token.lower()
+    return lowered in _STATE_CLASS_WORDS or bool(_STATE_CLASS_PREFIX_RE.match(token))
+
+
 def semantic_class_tokens(class_attr_value: str) -> tuple[str, ...]:
     """The subset of a `class` attribute's tokens considered safe identity
-    signals: real (non-atomic-looking) class names, order-independent."""
+    signals: real class names that are neither generated-looking nor a
+    record of transient UI state, order-independent."""
     tokens = (class_attr_value or "").split()
-    return tuple(sorted(t for t in tokens if t and not looks_like_atomic_class_token(t)))
+    return tuple(
+        sorted(
+            t
+            for t in tokens
+            if t and not looks_like_atomic_class_token(t) and not looks_like_state_class_token(t)
+        )
+    )

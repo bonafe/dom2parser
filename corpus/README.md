@@ -22,8 +22,9 @@ atrás de si; a que só tem uma é dívida declarada.
 | `datagov_datasets.html` | [catalog.data.gov](https://catalog.data.gov/dataset) | USWDS: invólucro só com utilitárias (`margin-0`, `display-flex`); metadado como `strong` rótulo + valor; dois invólucros 1:1 com identidade |
 | `gov_br_noticias.html` | [gov.br](https://www.gov.br/pt-br/noticias/ultimas-noticias) | Plone, em português. Cada card tem `aria-label` com a **própria manchete** — conteúdo por instância que nunca pode virar nome de campo |
 | `github_topics.html` | [github.com/topics](https://github.com/topics) | Nenhuma classe semântica: só utilitárias do Primer (`no-underline`, `rounded`, `color-fg-muted`, `tmp-py-4`). Seletor e nomes têm de cair para posição |
+| `chatgpt.html` | chatgpt.com (conversa própria, anonimizada) | Classes Tailwind com valor arbitrário (`bg-[#F4F4F4]!`, `dark:bg-[#303030]!`) que derrubavam o `cssselect` ao virar seletor; só 2 registros na página, poucos demais pra `records.promote()` achar o nível certo (`xfail` conhecido) |
 
-Snapshots baixados em 2026-09-10 com `curl`; não são atualizados automaticamente.
+Snapshots baixados em 2026-09-10 com `curl`, exceto `chatgpt.html` (2026-09-17, com todo `<script>` esvaziado antes do commit -- a página trazia sessão logada: token OAuth, e-mail e nome da conta); não são atualizados automaticamente.
 O ground truth está em `ground_truth.yaml` e `tests/test_corpus.py` mede o que o
 pipeline entrega contra ele — 43 verificações, quatro tipos:
 

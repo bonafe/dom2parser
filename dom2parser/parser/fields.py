@@ -292,7 +292,17 @@ def _resolve(locator: str, scope: list) -> list | None:
     whole definition)."""
     if locator == "":
         return list(scope)
-    xpath = relative_locator(locator)
+    # A class segment built from the element's own attributes (`_own_segments`)
+    # is not guaranteed to be valid CSS: a Tailwind arbitrary-value class like
+    # `bg-[#F4F4F4]!` (corpus/chatgpt.html) round-trips through `f"{tag}.{cls}"`
+    # unescaped and `cssselect` rejects it. Treat that the same as any other
+    # candidate that fails to resolve, rather than letting it crash the whole
+    # build -- `selector.py`'s `_compile` already applies the same guard for
+    # record selectors.
+    try:
+        xpath = relative_locator(locator)
+    except Exception:
+        return None
     resolved = []
     for element in scope:
         if element is None:

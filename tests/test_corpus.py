@@ -25,7 +25,20 @@ GROUND_TRUTH = yaml.safe_load((CORPUS_DIR / "ground_truth.yaml").read_text())
 
 # (file, check) -> measured reason. Removing an entry is how a fix is
 # claimed; a stale entry fails the suite because the xfail is strict.
-_KNOWN_GAPS: dict[tuple[str, str], str] = {}
+_KNOWN_GAPS: dict[tuple[str, str], str] = {
+    ("chatgpt.html", "record"): (
+        "the two conversation turns (div.min-h-8.text-message, the message "
+        "wrapper) form the highest-scored family on the page, but every "
+        "top-ranked family's promoted level converges on the same wrong "
+        "boundary -- span.contents (10), an unrelated set of inline "
+        "formatting wrappers ProseMirror leaves inside the assistant's "
+        "rendered markdown. With only 2 records, `records.promote()`'s "
+        "injective-parent climb runs out of siblings to disambiguate on "
+        "long before it reaches the level a human would call the record."
+    ),
+    ("chatgpt.html", "fields"): "no matching record is emitted; see the record gap",
+    ("chatgpt.html", "values"): "no matching record is emitted; see the record gap",
+}
 
 
 def _params(check: str):

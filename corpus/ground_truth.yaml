@@ -145,3 +145,20 @@
   expected_values:
     - index: 0
       values: ["Awesome Lists"]
+
+- file: chatgpt.html
+  record:
+    selector: 'section[data-testid^="conversation-turn-"]'
+    count: 2
+    note: >
+      Only two turns (user then assistant) -- a family far smaller than
+      anything else here -- and the assistant's turn is Tailwind-generated
+      markup full of arbitrary-value classes like `bg-[#F4F4F4]!` and
+      `dark:bg-[#303030]!`, which crashed `cssselect` outright until
+      `parser.fields._resolve` learned to treat an unbuildable locator as
+      just another candidate that fails to resolve, the same way
+      `parser.selector._compile` already handled it for record selectors.
+  min_fields: 2
+  expected_values:
+    - index: 0
+      values: ["Você disse: compara atualmente o vscode e o antigravity"]

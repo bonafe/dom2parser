@@ -164,3 +164,47 @@ def test_spec_round_trip_keeps_scalars_and_old_specs_still_load(entries):
     assert again.scalars == spec.scalars
     assert all(isinstance(s, ScalarEntry) for s in again.scalars)
     assert ParserSpec.from_dict({"schema_version": 1, "records": []}).scalars == []
+
+
+def _statement_with_list(previous, rows):
+    linhas = "".join(f"<tr><td>{d}</td><td>{desc}</td><td>{v}</td></tr>" for d, desc, v in rows)
+    return f"""<html><body>
+<table class="resumo"><tr><td>Saldo anterior</td><td>{previous}</td></tr></table>
+<div class="lancamentos"><table><tr><td>Data</td><td>Descrição</td><td>Valor</td></tr>{linhas}</table></div>
+</body></html>"""
+
+
+def test_a_value_that_also_sits_in_a_list_row_is_taken_from_outside_the_list():
+    # "100,00" is both the previous balance and one purchase. Anchoring on the
+    # purchase ("MERCADO UM") reproduces the sample and breaks next month.
+    rows = [("01/09", "BAR UM", "10,00"), ("02/09", "MERCADO UM", "100,00"), ("03/09", "BAR DOIS", "5,00"),
+            ("04/09", "BAR TRES", "7,00")]
+    entries, failures = synthesize_scalars(_statement_with_list("100,00", rows), {"saldo": "100,00"})
+    assert failures == [] and entries[0].label == "Saldo anterior"
+    next_month = _statement_with_list("250,00", [("01/10", "PADARIA", "3,00"), ("02/10", "FARMACIA", "9,00"),
+                                                 ("03/10", "BAR", "1,00")])
+    assert execute_scalars(entries, next_month) == {"saldo": "250,00"}
+
+
+def test_a_value_found_only_inside_a_list_is_still_located():
+    rows = [("01/09", "BAR UM", "10,00"), ("02/09", "MERCADO UM", "100,00"), ("03/09", "BAR DOIS", "5,00")]
+    result = synthesize_scalars(_statement_with_list("1,00", rows), {"primeira_compra": "BAR UM"})
+    assert result[1] == [] and result[0][0].name == "primeira_compra"
+
+
+def test_a_short_summary_table_beats_a_long_list_even_when_both_are_records():
+    # A two-row summary (balance, total) is itself a repeated record; it is the
+    # smaller one, so the balance still comes from it and not from a purchase.
+    def page(previous, total, rows):
+        linhas = "".join(f"<tr><td>{d}</td><td>{desc}</td><td>{v}</td></tr>" for d, desc, v in rows)
+        return f"""<html><body><table class="resumo">
+<tr><td>Saldo anterior</td><td>{previous}</td></tr><tr><td>Total</td><td>{total}</td></tr></table>
+<div class="lancamentos"><table><tr><td>Data</td><td>Descrição</td><td>Valor</td></tr>{linhas}</table></div>
+</body></html>"""
+
+    rows = [("01/09", "BAR UM", "10,00"), ("02/09", "MERCADO UM", "100,00"), ("03/09", "BAR DOIS", "5,00"),
+            ("04/09", "BAR TRES", "7,00"), ("05/09", "BAR QUATRO", "2,00")]
+    entries, _ = synthesize_scalars(page("100,00", "124,00", rows), {"saldo": "100,00"})
+    assert entries[0].label == "Saldo anterior"
+    other = page("300,00", "301,00", [("01/10", "PADARIA", "1,00"), ("02/10", "BAR", "1,00"), ("03/10", "X", "1,00")])
+    assert execute_scalars(entries, other) == {"saldo": "300,00"}

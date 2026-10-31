@@ -22,6 +22,14 @@ other page. Two rules keep the locator about the field and not the value:
   `Vencimento\\s*(\\d{1,2}/\\d{1,2}(?:/\\d{2,4})?)`: the label stays literal,
   the value becomes the shape of a date, so next month's date matches too.
 
+A value that also occurs inside a repeated record -- the previous balance
+that happens to equal one purchase -- is taken from the smallest place it
+occurs: outside every record first, then the record with the fewest rows.
+What a long list says is data and changes every month; anchoring a lone
+field on "MERCADO UM" reproduces the sample and breaks on the next
+statement. A two-row summary table (balance, total) is a record too, but
+short ones hold labelled values, long ones hold data.
+
 Candidates are ranked by how likely they are to survive a page that changed
 a little. A label is what a page keeps stable for its readers, so it comes
 first; a class is next; an absolute path, which breaks when anything above
@@ -229,9 +237,41 @@ def extract_scalar(entry: ScalarEntry, root) -> str:
     return match.group(1).strip() if match else ""
 
 
-def synthesize_scalar(root, name: str, example: str) -> ScalarSynthesis:
+def record_elements(root, records) -> dict:
+    """Each element inside a repeated record of `records` (RecordEntry list),
+    including the extra siblings of a multi-element record, mapped to the
+    number of rows of the smallest record it belongs to."""
+    from lxml.cssselect import CSSSelector
+
+    sizes: dict = {}
+    for record in records:
+        try:
+            anchors = CSSSelector(record.selector)(root)
+        except Exception:
+            continue
+        for anchor in anchors:
+            node = anchor
+            for _ in range(max(1, record.span)):
+                if node is None:
+                    break
+                for el in node.iter():
+                    sizes[el] = min(sizes.get(el, len(anchors)), len(anchors))
+                node = node.getnext()
+    return sizes
+
+
+def _verified_records(html: str) -> list:
+    from .build import build_spec
+
+    return [r for r in build_spec(html).records
+            if r.verified.get("precision", 0) >= 1.0 and r.verified.get("recall", 0) >= 1.0]
+
+
+def synthesize_scalar(root, name: str, example: str, record_sizes: dict | None = None) -> ScalarSynthesis:
     """Find where `example` lives in `root` and a locator that reproduces it
-    without naming it. `root` is the ORIGINAL document, parsed."""
+    without naming it. `root` is the ORIGINAL document, parsed; occurrences
+    inside long records (`record_elements`) lose to the rest."""
+    record_sizes = record_sizes or {}
     value = collapse_whitespace(example)
     if not value:
         return ScalarSynthesis(entry=None, reason="empty example")
@@ -261,7 +301,7 @@ def synthesize_scalar(root, name: str, example: str) -> ScalarSynthesis:
             )
             if extract_scalar(entry, root) != value:
                 continue
-            key = (STRATEGY_RANK[strategy], matched != 1, len(locator))
+            key = (record_sizes.get(el, 0), STRATEGY_RANK[strategy], matched != 1, len(locator))
             if best is None or key < best[0]:
                 best = (key, entry)
     if best is None:
@@ -269,13 +309,15 @@ def synthesize_scalar(root, name: str, example: str) -> ScalarSynthesis:
     return ScalarSynthesis(entry=best[1], tried=tried)
 
 
-def synthesize_scalars(html: str, examples: dict[str, str]) -> tuple[list[ScalarEntry], list[dict]]:
+def synthesize_scalars(html: str, examples: dict[str, str], records=None) -> tuple[list[ScalarEntry], list[dict]]:
     """One entry per example that could be located; a failure, with its
-    reason, for each that could not."""
+    reason, for each that could not. `records` are the page's repeated
+    records (RecordEntry); by default the verified ones `build_spec` finds."""
     root = parse_html(html)
+    inside = record_elements(root, _verified_records(html) if records is None else records)
     entries, failures = [], []
     for name, example in examples.items():
-        result = synthesize_scalar(root, name, example)
+        result = synthesize_scalar(root, name, example, inside)
         if result.ok:
             entries.append(result.entry)
         else:
@@ -294,6 +336,7 @@ __all__ = [
     "ScalarSynthesis",
     "execute_scalars",
     "extract_scalar",
+    "record_elements",
     "synthesize_scalar",
     "synthesize_scalars",
     "value_pattern",

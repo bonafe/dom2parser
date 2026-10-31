@@ -59,16 +59,36 @@ class RecordEntry:
 
 
 @dataclass(frozen=True)
+class ScalarEntry:
+    """A field that occurs once on the page (a due date, a total), located
+    from an example of its value -- see `parser.scalars`."""
+
+    name: str
+    locator: str  # XPath, evaluated from the document root; the first match is the field
+    capture: str  # "text" | "attr"
+    attribute: str | None
+    pattern: str | None  # regex with one group, cutting the value out of the captured text
+    type: str
+    strategy: str  # "label" | "prefix" | "class" | "id" | "class-indexed" | "position"
+    label: str | None
+    verified: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ParserSpec:
     schema_version: int
     records: list[RecordEntry]
     failures: list[dict] = field(default_factory=list)
+    # Lone fields come from examples the caller supplies, never from
+    # `build_spec` alone: a page does not say which of its single values matter.
+    scalars: list[ScalarEntry] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "schema_version": self.schema_version,
             "records": [asdict(r) for r in self.records],
             "failures": list(self.failures),
+            "scalars": [asdict(s) for s in self.scalars],
         }
 
     def to_yaml(self) -> str:
@@ -96,6 +116,7 @@ class ParserSpec:
             schema_version=data.get("schema_version", SCHEMA_VERSION),
             records=records,
             failures=data.get("failures", []),
+            scalars=[ScalarEntry(**s) for s in data.get("scalars", [])],
         )
 
     @classmethod
@@ -107,4 +128,4 @@ class ParserSpec:
         return cls.from_dict(json.loads(text))
 
 
-__all__ = ["SCHEMA_VERSION", "FieldEntry", "RecordEntry", "ParserSpec"]
+__all__ = ["SCHEMA_VERSION", "FieldEntry", "RecordEntry", "ScalarEntry", "ParserSpec"]

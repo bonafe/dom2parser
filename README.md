@@ -95,6 +95,31 @@ Salve o parser com `result.parser.to_yaml()` e recarregue com
 `ParserSpec.from_yaml()` — é o ponto onde um humano renomeia um campo cujo nome
 saiu ruim.
 
+### Campos únicos, a partir de um exemplo
+
+Vencimento, total e nome do cartão aparecem uma vez só: não há repetição que
+diga onde estão. Para eles, quem chama informa **um exemplo do valor** (lido por
+uma pessoa ou por um LLM) e a biblioteca procura onde ele está e sintetiza um
+locator (XPath) que o reproduz, sem nunca usar o próprio valor:
+
+```python
+from dom2parser.parser.scalars import synthesize_scalars, execute_scalars
+
+entries, failures = synthesize_scalars(html, {"vencimento": "28/10/2026", "total": "13.405,63"})
+# vencimento: prefix  //div[starts-with(..., 'Vencimento')]...   padrão Vencimento\s*(\d{1,2}/\d{1,2}(?:/\d{2,4})?)
+# total:      label   //div[...='Valor Total']/following-sibling::div[2]
+
+execute_scalars(entries, html_do_mes_seguinte)
+# {'vencimento': '28/11/2026', 'total': '512,00'}
+```
+
+O rótulo vizinho ("Vencimento", "Total da fatura - R$") é a âncora preferida,
+porque é o que a página mantém estável para quem a lê; depois vêm classe, id e,
+por último, o caminho absoluto (`strategy` diz qual foi usada). Quando o valor
+divide o elemento com outro texto, ele é recortado pela **forma** (data, número),
+não pelo conteúdo. Um irmão com a mesma tag e classe do alvo é outro valor, não
+rótulo. Os campos únicos vão em `ParserSpec.scalars`, ao lado dos registros.
+
 ### Duas coisas que não se deve confundir
 
 `path_display` (`tr > td > div.lancamentos > ...`) **não é um seletor**: ele é

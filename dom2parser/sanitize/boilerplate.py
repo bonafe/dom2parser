@@ -29,6 +29,8 @@ NAV_KEYWORD_RE = re.compile("|".join(re.escape(k) for k in NAV_KEYWORDS), re.IGN
 
 NAV_TAGS = {"nav"}
 NAV_ROLES = {"navigation", "menu", "menubar", "menuitem"}
+ITEM_ROLES = {"button", "listitem", "row", "gridcell", "cell", "option", "article", "checkbox", "radio",
+              "switch", "treeitem"}
 
 INLINE_DISPLAY_NONE_RE = re.compile(r"display\s*:\s*none", re.IGNORECASE)
 
@@ -39,6 +41,14 @@ def _looks_like_nav(el: etree._Element) -> bool:
     role = el.get("role", "")
     if role.lower() in NAV_ROLES:
         return True
+    # An item role says what the element is; a nav keyword in its class is
+    # then a styling hint, not a navigation region. bancodobrasil's new
+    # statement marks every clickable entry `class="navigation"
+    # role="button"` (it opens the detail): the keyword alone removed 51 of
+    # 53 statement lines, every record but the two balance lines. Landmark
+    # roles (`complementary` on a sidebar) are not exempt.
+    if role.lower() in ITEM_ROLES:
+        return False
     haystack = f"{el.get('id', '')} {el.get('class', '')}"
     return bool(NAV_KEYWORD_RE.search(haystack))
 

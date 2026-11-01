@@ -62,6 +62,9 @@ class FieldSpec:
     present: int
     total: int
     sibling: int = 0
+    # "" : the locator is CSS relative to the scope. "preceding": an XPath
+    # on the preceding axis, from the anchor (see `parser.context`).
+    axis: str = ""
 
     @property
     def required(self) -> bool:
@@ -318,6 +321,46 @@ def _resolve(locator: str, scope: list) -> list | None:
     return resolved
 
 
+def _tag_path(el, scope) -> tuple:
+    path = []
+    node = el
+    while node is not None and node is not scope:
+        path.append(node.tag)
+        node = node.getparent()
+    return tuple(path)
+
+
+def _widen(el, scope: list, source_index: int, locator: str, resolved: list, later: list[str]) -> tuple:
+    """A later candidate that reaches the same slot in more records.
+
+    The first locator that resolves is measured on one record, and a
+    modifier class can make it miss its own slot elsewhere: the value of
+    every bancodobrasil statement line is `bb-caption.large` plus
+    `negative` or `positive`, and `bb-caption.negative` -- first in line --
+    left every incoming amount out of the column. A later candidate wins
+    when it agrees on every record the first one reached, and each extra
+    element sits at the same tag path inside its record and reads as the
+    same type of value. Never a different slot, only more of this one."""
+    source_path = _tag_path(el, scope[source_index])
+    kind = _dominant_type([_value_of(r, None) for r in resolved if r is not None])
+    best, best_resolved = locator, resolved
+    best_present = sum(1 for r in resolved if r is not None)
+    for candidate in later:
+        found = _resolve(candidate, scope)
+        if found is None or found[source_index] is not el:
+            continue
+        present = sum(1 for r in found if r is not None)
+        if present <= best_present:
+            continue
+        agrees = all(r is None or f is r for r, f in zip(resolved, found))
+        extras = [(f, s) for r, f, s in zip(resolved, found, scope) if r is None and f is not None]
+        same_slot = all(_tag_path(f, s) == source_path for f, s in extras)
+        same_kind = all(_dominant_type([_value_of(f, None)]) in (kind, "EMPTY") for f, _ in extras)
+        if agrees and same_slot and same_kind:
+            best, best_resolved, best_present = candidate, found, present
+    return best, best_resolved
+
+
 def _value_of(el, attribute: str | None) -> str:
     return capture_value(el, "attr" if attribute else "text", attribute)
 
@@ -472,10 +515,14 @@ def discover(records: list, span: int = 1) -> list[FieldSpec]:
                 if el is source:
                     locator, resolved = "", list(scope)
                 else:
-                    for candidate in _locator_candidates(el, source):
+                    candidates_el = _locator_candidates(el, source)
+                    for position, candidate in enumerate(candidates_el):
                         found = _resolve(candidate, scope)
                         if found is not None and found[source_index] is el:
                             locator, resolved = candidate, found
+                            locator, resolved = _widen(
+                                el, scope, source_index, locator, resolved, candidates_el[position + 1:]
+                            )
                             break
                 if locator is None:
                     continue

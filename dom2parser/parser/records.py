@@ -160,7 +160,7 @@ def _climb(current: list) -> list | None:
     return [parent for parent, _ in distinct.values()]
 
 
-def completed_levels(seed: list, clean_root, index: dict, clean_index: dict, cache: dict | None = None, reused_ids: frozenset[str] = frozenset()):
+def completed_levels(seed: list, clean_root, index: dict, clean_index: dict, cache: dict | None = None, reused_ids: frozenset[str] = frozenset(), injective_only: bool = False):
     """Promotion levels for original-tree `seed` elements, each re-closed
     before the next is climbed FROM IT.
 
@@ -171,7 +171,12 @@ def completed_levels(seed: list, clean_root, index: dict, clean_index: dict, cac
     that the 23rd row's parent is not a `list-item-*` wrapper, which is
     what stops the wrapper level from being mistaken for an exact,
     outermost record boundary. Re-closing each raw level independently
-    yielded a 22-row wrapper record instead."""
+    yielded a 22-row wrapper record instead.
+
+    `injective_only` forbids the fan-out climb: records known to be nested
+    in groups (a statement's lines under each day) would otherwise climb
+    into the group whenever no day holds more than `MAX_PARTS` lines,
+    reading the lines as parts of a day record."""
     level = seed
     for _ in range(MAX_PROMOTION_LEVELS + 1):
         in_clean = [clean_index[uid] for el in level if (uid := el.get(UID_ATTR)) in clean_index]
@@ -179,6 +184,8 @@ def completed_levels(seed: list, clean_root, index: dict, clean_index: dict, cac
         yield completed
         level = _climb(completed)
         if level is None:
+            return
+        if injective_only and len({id(el) for el in level}) < len(completed):
             return
 
 

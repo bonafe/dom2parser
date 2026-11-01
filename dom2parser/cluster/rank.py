@@ -12,6 +12,7 @@ retuned without having to re-derive the rationale.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 
 from lxml import etree
@@ -156,6 +157,10 @@ def rank_clusters(clusters: list[Cluster]) -> list[ClusterScore]:
 
 
 RICH_SIGNATURE_MIN_FIELDS = 2
+#: Set on the (clean-tree) elements of a cluster taken as records nested in
+#: groups (`repeats_inside`), so promotion does not climb back into the
+#: group (`parser.records.completed_levels`).
+GROUPED_ATTR = "data-d2p-grouped"
 
 
 def is_rich_signature(content_signature: tuple[str, ...]) -> bool:
@@ -199,16 +204,66 @@ def select_top_level_clusters(ranked: list[ClusterScore], max_clusters: int = 10
     """
     selected: list[ClusterScore] = []
     covered: set = set()
+    owner: dict = {}  # covered element -> the selected ClusterScore it belongs to
     for cs in ranked:
         elements = cs.cluster.elements
-        if any(has_covered_ancestor(el, covered) for el in elements):
+        holders = [covering_ancestor(el, covered) for el in elements]
+        nested = any(h is not None for h in holders)
+        if nested and not repeats_inside(cs, holders):
             continue
+        # A full budget still takes records that replace their containers:
+        # they rank lower than the groups holding them (the lines of a
+        # statement score below the day cards), often past the cut.
+        if len(selected) >= max_clusters and not nested:
+            continue
+        if nested:
+            for el in elements:
+                el.set(GROUPED_ATTR, "1")
+            # The covering clusters are containers of this one: groups of
+            # records, not records. They give way to the records they hold.
+            displaced = {id(owner[h]) for h in holders if h is not None}
+            for gone in [s for s in selected if id(s) in displaced]:
+                selected.remove(gone)
+                for el in gone.cluster.elements:
+                    covered.discard(el)
+                    owner.pop(el, None)
         selected.append(cs)
         if is_rich_signature(cs.cluster.content_signature):
             covered.update(elements)
-        if len(selected) >= max_clusters:
-            break
+            owner.update((el, cs) for el in elements)
     return selected
+
+
+def covering_ancestor(el, covered: set):
+    """The nearest ancestor of `el` that is in `covered`, or None."""
+    node = el.getparent()
+    while node is not None:
+        if node in covered:
+            return node
+        node = node.getparent()
+    return None
+
+
+def repeats_inside(cs: ClusterScore, holders: list) -> bool:
+    """True when `cs` is a list of records nested inside the covering
+    cluster's elements, so the covering elements are groups, not records.
+
+    bancodobrasil.com.br's new statement groups its entries by day: one
+    card per day holds the day's title and one to seven entry lines. The
+    day cards cluster first (their signature is rich: a COUNT_LABELED title
+    and the flattened lines) and used to suppress the lines, so every day
+    became one record with its lines as `div:nth-of-type(k)` columns -- and
+    the second entry of a day was never a record. A varying number of rich
+    inner records per container is what says the container is a group: a
+    constant number is a record's own structure (every card has two
+    prices), not a nested list."""
+    if not is_rich_signature(cs.cluster.content_signature):
+        return False
+    per_holder = Counter(id(h) for h in holders if h is not None)
+    if len(per_holder) < 2:
+        return False
+    counts = set(per_holder.values())
+    return max(counts) >= 2 and len(counts) > 1
 
 
 def has_covered_ancestor(el, covered: set) -> bool:

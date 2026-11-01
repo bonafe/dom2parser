@@ -41,6 +41,11 @@ class FieldEntry:
     # anchor the selector matched, 1 its next element sibling, and so on.
     # Only ever non-zero when the record's `span` is greater than one.
     sibling: int = 0
+    # "" : `locator` is CSS relative to the scoped element. "preceding":
+    # `locator` is an XPath evaluated from the record's anchor, reaching
+    # back to the title of the group the record belongs to (a day heading
+    # above that day's statement lines) -- see `parser.context`.
+    axis: str = ""
 
 
 @dataclass(frozen=True)

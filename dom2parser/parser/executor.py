@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from lxml.cssselect import CSSSelector
+from lxml.etree import XPath
 
 from ..html_io import parse_html
 from .fields import capture_value, field_text, relative_locator, scoped_element
@@ -46,7 +47,7 @@ class CompiledRecord:
 
     entry: object
     anchors: list
-    locators: list  # (name, sibling, xpath or None for the scope itself, capture, attribute)
+    locators: list  # (name, sibling, xpath or None for the scope itself, capture, attribute, axis)
 
     @property
     def anchor_set(self) -> set:
@@ -58,7 +59,14 @@ def compile_record(entry, root) -> CompiledRecord:
         entry=entry,
         anchors=CSSSelector(entry.selector)(root),
         locators=[
-            (f.name, f.sibling, relative_locator(f.locator) if f.locator else None, f.capture, f.attribute)
+            (
+                f.name,
+                f.sibling,
+                XPath(f.locator) if f.axis == "preceding" else relative_locator(f.locator) if f.locator else None,
+                f.capture,
+                f.attribute,
+                f.axis,
+            )
             for f in entry.fields
         ],
     )
@@ -67,7 +75,11 @@ def compile_record(entry, root) -> CompiledRecord:
 def record_values(anchor, compiled: CompiledRecord, anchor_set: set | None = None) -> dict:
     anchor_set = compiled.anchor_set if anchor_set is None else anchor_set
     values = {}
-    for name, sibling, xpath, capture, attribute in compiled.locators:
+    for name, sibling, xpath, capture, attribute, axis in compiled.locators:
+        if axis == "preceding":
+            hits = xpath(anchor)
+            values[name] = capture_value(hits[0] if hits else None, capture, attribute)
+            continue
         scope = scoped_element(anchor, sibling, anchor_set)
         if scope is None:
             values[name] = ""

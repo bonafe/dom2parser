@@ -21,12 +21,13 @@ from lxml import etree
 
 from ..anchor import UID_ATTR, build_index, originals_for, stamp_uids
 from ..cluster.families import build_families
-from ..cluster.rank import rank_clusters, select_top_level_clusters
+from ..cluster.rank import GROUPED_ATTR, rank_clusters, select_top_level_clusters
 from ..cluster.siblings import cluster_siblings
 from ..fingerprint.hashattrs import semantic_class_tokens
 from ..fingerprint.structural import filter_meaningful_candidates, generated_ids, reused_ids
 from ..html_io import parse_html
 from ..sanitize import full_sanitize
+from .context import group_title
 from .fields import capture_value, discover, is_decoration, relative_locator, scoped_element
 from .naming import slugify
 from .records import anchor_offsets, closure, closure_of, completed_levels, period, shift_anchors
@@ -66,8 +67,9 @@ def _best_level(family, clean, root, index, clean_index, cache, document_ids, mi
         return None, None, (), 1
 
     exact, inexact = [], []
+    grouped = any(el.get(GROUPED_ATTR) for el in seed)
     for completed in completed_levels(
-        originals_for(seed, index), clean, index, clean_index, cache, document_ids
+        originals_for(seed, index), clean, index, clean_index, cache, document_ids, injective_only=grouped
     ):
         result = synthesize(completed, root, minted)
         if not result.ok:
@@ -153,6 +155,9 @@ def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[i
 
         found = discover(elements, span)
         header_values = _header_values(elements, found)
+        title = group_title(elements, {f.name for f in found})
+        if title is not None:
+            found = [title, *found]
         # A record whose every field is empty carries no information; it
         # is a spacer row, or a header row whose cells are `th` where the
         # locators expect `td`. Skipped, never dropped -- the executor
@@ -177,6 +182,7 @@ def specs_for_families(families, clean, root, index) -> tuple[ParserSpec, dict[i
                     total=f.total,
                     name_source=f.name_source,
                     sibling=f.sibling,
+                    axis=f.axis,
                 )
                 for f in found
             ],
